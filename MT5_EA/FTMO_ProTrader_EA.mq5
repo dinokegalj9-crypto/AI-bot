@@ -105,6 +105,22 @@ int h_fastEMA_TF, h_slowEMA_TF, h_trendEMA_TF, h_macd_TF;
 string DashPrefix = "FTMO_DASH_";
 
 //+------------------------------------------------------------------+
+//| Type declarations (must precede first use in OnTick)             |
+//+------------------------------------------------------------------+
+enum ENUM_SIGNAL { SIGNAL_NONE, SIGNAL_BUY, SIGNAL_SELL };
+
+struct IndicatorValues
+{
+    // Main TF
+    double fastEMA[3], slowEMA[3], trendEMA[3];
+    double rsi[3], atr[3];
+    double macdMain[3], macdSignal[3];
+    // Trend TF
+    double fastEMA_TF[3], slowEMA_TF[3], trendEMA_TF[3];
+    double macdMain_TF[3], macdSig_TF[3];
+};
+
+//+------------------------------------------------------------------+
 //| Expert initialization                                            |
 //+------------------------------------------------------------------+
 int OnInit()
@@ -352,19 +368,8 @@ void UpdateRiskManagement()
 }
 
 //============================================================
-// INDICATOR DATA STRUCTURE & LOADER
+// INDICATOR DATA LOADER
 //============================================================
-
-struct IndicatorValues
-{
-    // Main TF
-    double fastEMA[3], slowEMA[3], trendEMA[3];
-    double rsi[3], atr[3];
-    double macdMain[3], macdSignal[3];
-    // Trend TF
-    double fastEMA_TF[3], slowEMA_TF[3], trendEMA_TF[3];
-    double macdMain_TF[3], macdSig_TF[3];
-};
 
 bool LoadIndicators(IndicatorValues &iv)
 {
@@ -394,8 +399,6 @@ bool LoadIndicators(IndicatorValues &iv)
 //============================================================
 // SIGNAL GENERATION  (multi-confluence)
 //============================================================
-
-enum ENUM_SIGNAL { SIGNAL_NONE, SIGNAL_BUY, SIGNAL_SELL };
 
 ENUM_SIGNAL GetSignal(const IndicatorValues &iv)
 {
