@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "FTMO ProTrader EA Tests"
 #property script_show_inputs
-#property version "1.00"
+#property version "1.10"
 
 input double InpStartBalance = 100000.0; // Test account balance ($)
 
@@ -55,11 +55,14 @@ double TestCalcLotSize(double balance, double riskPct, double slPoints,
                        double minLot, double maxLot, double lotStep)
 {
     if(tickSz <= 0 || slPoints <= 0 || tickVal <= 0) return 0;
-    double riskAmt   = balance * riskPct / 100.0;
-    double ticksInSL = slPoints / tickSz;
-    double lots      = riskAmt / (ticksInSL * tickVal);
+    double riskAmt       = balance * riskPct / 100.0;
+    double valuePerPoint = (slPoints / tickSz) * tickVal;
+    double lots          = riskAmt / valuePerPoint;
     lots = MathFloor(lots / lotStep) * lotStep;
     lots = MathMax(minLot, MathMin(maxLot, lots));
+    //--- Over-risk guard (mirrors EA v3.10): skip if min lot risks > 1.5× target
+    double actualRisk = lots * valuePerPoint;
+    if(actualRisk > riskAmt * 1.5) return 0;
     return lots;
 }
 
@@ -97,9 +100,13 @@ void TestLotSizing()
     double l7 = TestCalcLotSize(100000, 50.0, 0.0001, 1.0, 0.00001, 0.01, 10.0, 0.01);
     AssertLE("Lot clamped to maxLot=10.0", l7, 10.0);
 
-    // Clamps to minLot
-    double l8 = TestCalcLotSize(1000, 0.01, 0.0200, 1.0, 0.00001, 0.01, 100.0, 0.01);
-    AssertGT("Lot >= minLot=0.01", l8, 0.0);
+    // Small raw lot clamps UP to minLot when risk stays within 1.5× tolerance
+    double l8 = TestCalcLotSize(100000, 0.01, 0.012, 1.0, 0.00001, 0.01, 100.0, 0.01);
+    AssertNear("Tiny risk clamps up to minLot=0.01 (within tolerance)", l8, 0.01, 0.0001);
+
+    // Over-risk guard: minLot would risk >> target on a small account → skip (0 lots)
+    double l9 = TestCalcLotSize(1000, 0.01, 0.0200, 1.0, 0.00001, 0.01, 100.0, 0.01);
+    AssertNear("Over-risk min lot is skipped (returns 0)", l9, 0.0, 0.0001);
 }
 
 //============================================================
@@ -326,6 +333,82 @@ void TestATRDistances()
 }
 
 //============================================================
+// MODULE 9 — SPREAD FILTER
+// Mirrors IsSpreadOK(): reject entry when spread > InpMaxSpreadPoints
+//============================================================
+
+bool TestSpreadOK(long spread, int maxSpread)
+{
+    return (spread <= maxSpread);
+}
+
+void TestSpreadFilter()
+{
+    Section("SPREAD FILTER (max 30 points default)");
+
+    AssertTrue ("Spread 10 <= 30 allowed",      TestSpreadOK(10, 30));
+    AssertTrue ("Spread exactly 30 allowed",    TestSpreadOK(30, 30));
+    AssertFalse("Spread 31 blocked",            TestSpreadOK(31, 30));
+    AssertFalse("Spread 200 (news spike) blocked", TestSpreadOK(200, 30));
+    AssertTrue ("Spread 0 allowed",             TestSpreadOK(0, 30));
+}
+
+//============================================================
+// MODULE 10 — INPUT VALIDATION
+// Mirrors ValidateInputs(): config that could violate FTMO is rejected
+//============================================================
+
+bool TestValidateInputs(double risk, double dailyLoss, double totalLoss,
+                        int fastEMA, int slowEMA, int trendEMA,
+                        double rsiOB, double rsiOS, int maxTrades, int maxSpread)
+{
+    if(risk <= 0.0 || risk > 5.0)           return false;
+    if(dailyLoss <= 0.0 || dailyLoss >= 5.0) return false;
+    if(totalLoss <= 0.0 || totalLoss >= 10.0) return false;
+    if(fastEMA >= slowEMA)                   return false;
+    if(slowEMA >= trendEMA)                  return false;
+    if(rsiOB <= rsiOS)                       return false;
+    if(maxTrades < 1)                        return false;
+    if(maxSpread <= 0)                       return false;
+    return true;
+}
+
+void TestInputValidation()
+{
+    Section("INPUT VALIDATION");
+
+    // Valid default config
+    AssertTrue ("Default config is valid",
+                TestValidateInputs(1.0, 4.5, 9.0, 20, 50, 200, 65, 35, 1, 30));
+
+    // FTMO hard-limit violations
+    AssertFalse("Daily loss >= 5% rejected",
+                TestValidateInputs(1.0, 5.0, 9.0, 20, 50, 200, 65, 35, 1, 30));
+    AssertFalse("Total loss >= 10% rejected",
+                TestValidateInputs(1.0, 4.5, 10.0, 20, 50, 200, 65, 35, 1, 30));
+
+    // Risk bounds
+    AssertFalse("Risk 0% rejected",   TestValidateInputs(0.0, 4.5, 9.0, 20, 50, 200, 65, 35, 1, 30));
+    AssertFalse("Risk 6% rejected",   TestValidateInputs(6.0, 4.5, 9.0, 20, 50, 200, 65, 35, 1, 30));
+
+    // EMA ordering
+    AssertFalse("FastEMA >= SlowEMA rejected",
+                TestValidateInputs(1.0, 4.5, 9.0, 50, 50, 200, 65, 35, 1, 30));
+    AssertFalse("SlowEMA >= TrendEMA rejected",
+                TestValidateInputs(1.0, 4.5, 9.0, 20, 200, 200, 65, 35, 1, 30));
+
+    // RSI ordering
+    AssertFalse("RSI overbought <= oversold rejected",
+                TestValidateInputs(1.0, 4.5, 9.0, 20, 50, 200, 35, 65, 1, 30));
+
+    // Misc
+    AssertFalse("MaxTrades < 1 rejected",
+                TestValidateInputs(1.0, 4.5, 9.0, 20, 50, 200, 65, 35, 0, 30));
+    AssertFalse("MaxSpread <= 0 rejected",
+                TestValidateInputs(1.0, 4.5, 9.0, 20, 50, 200, 65, 35, 1, 0));
+}
+
+//============================================================
 // MAIN
 //============================================================
 
@@ -344,6 +427,8 @@ void OnStart()
     TestSessionFilter();
     TestLotNormalization();
     TestATRDistances();
+    TestSpreadFilter();
+    TestInputValidation();
 
     Print("\n════════════════════════════════════════════");
     int total = g_pass + g_fail;

@@ -38,6 +38,7 @@ InpUseBreakeven=1
 InpBEAtRR=1.0
 InpUseTrailing=1
 InpTrailATRMulti=1.0
+InpMaxSpreadPoints=30
 InpMagicNumber=202401
 InpUseLondon=1
 InpUseNewYork=1

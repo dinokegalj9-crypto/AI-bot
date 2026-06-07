@@ -38,6 +38,35 @@ Zero errors expected.
 
 ---
 
+## First Connection Checklist
+
+Work top to bottom — each step depends on the one before it.
+
+- [ ] **1. Install MT5** — download from your broker (Windows native; Mac/Linux via Wine).
+- [ ] **2. Log into the trading account** — `File → Login to Trading Account`, enter
+      the **Login / Password / Server** your broker (or FTMO) emailed you. Bottom-right
+      should show a live connection with a moving bid/ask.
+- [ ] **3. Enable the economic calendar** — `Tools → Options → Server →` tick
+      *"Enable news"* (required for the news filter).
+- [ ] **4. Copy the files** — `File → Open Data Folder`:
+      - `FTMO_ProTrader_EA.mq5` → `MQL5/Experts/`
+      - `FTMO_UnitTests.mq5` + `FTMO_Optimizer.mq5` → `MQL5/Scripts/`
+- [ ] **5. Compile** — open the EA in MetaEditor (F4) → **F7**. Expect **0 errors**.
+- [ ] **6. Refresh** — back in MT5, press **F5** in the Navigator panel.
+- [ ] **7. Run the unit tests first** — drag `FTMO_UnitTests` onto any chart →
+      check the **Experts/Journal** tab for `ALL TESTS PASSED ✓`.
+- [ ] **8. Backtest** — `Ctrl+R`, load `FTMO_BacktestConfig.set`, model
+      *"Every tick based on real ticks"*, ≥ 1 year of data → Start.
+- [ ] **9. Attach to a demo chart** — EURUSD H1, drag EA on, **Common → Allow Algo Trading**,
+      then click the toolbar **Algo Trading** button (must be green).
+- [ ] **10. Confirm** — the dashboard appears top-left and shows your live balance.
+- [ ] **11. Only after a clean demo run** — repeat on the funded FTMO Challenge account.
+
+> **Connection sanity check:** if the dashboard balance reads `$0.00` or the chart shows
+> no ticks, you are not logged into a trading account — redo step 2.
+
+---
+
 ## FTMO Rule Compliance
 
 | FTMO Rule | EA Setting | Default |
@@ -108,6 +137,36 @@ Trailing   : activates at 1.5× ATR profit, trails by 1× ATR
 - ECN/STP broker (low spread, fast execution)
 - Recommended spread: < 1.5 pips on EURUSD
 - GMT offset: set `InpGMTOffset` to match your broker's server time
+
+---
+
+## Built-in Safety Features (v3.10)
+
+| Feature | What it does |
+|---------|--------------|
+| **Input validation** | EA refuses to load (`INIT_PARAMETERS_INCORRECT`) if any setting could violate an FTMO hard limit (daily ≥ 5%, total ≥ 10%), or if EMA/RSI periods are mis-ordered. Check the Experts tab for `CONFIG ERROR` lines. |
+| **Spread filter** | `InpMaxSpreadPoints` (default 30) blocks new entries when the spread blows out during news or thin liquidity — protects the intended risk:reward. |
+| **Over-risk guard** | If the minimum lot would risk more than 1.5× your target (small account / wide SL), the trade is skipped instead of silently over-risking. |
+| **State persistence** | Initial balance, daily baseline, and halt flags survive an EA restart (MT5 GlobalVariables), so a mid-challenge reattach can't reset your drawdown reference. |
+| **Auto-halt + retry close** | On a daily/total limit breach the EA closes all positions and keeps retrying if the broker rejects a close. |
+
+> To clear a persisted halt after a challenge reset: `Tools → Global Variables (F3)`
+> and delete the `FTMO_*` entries for your symbol.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause / fix |
+|---------|--------------------|
+| `CONFIG ERROR` in Experts tab, EA won't run | An input failed validation — read the printed line and fix that input. |
+| Dashboard shows `$0.00` balance | Not logged into a trading account (step 2 of the checklist). |
+| EA loads but never trades | Outside session hours, news filter active, max trades open, or no 4/5 confluence yet — the dashboard **Status** line tells you which. |
+| "Spread too wide — entry skipped" | Spread > `InpMaxSpreadPoints`. Normal around news; raise the limit only if your broker's typical spread is genuinely higher. |
+| Trades skipped: "min lot would risk…" | Account too small / SL too wide for your risk %. Lower `InpATRSLMulti` or accept the skip. |
+| News filter never triggers | Economic calendar not enabled (`Tools → Options → Server → Enable news`). |
+| Session times look shifted | Set `InpGMTOffset` only if you need to nudge the GMT-based session windows for your broker's clock. |
+| Compile errors in MetaEditor | Ensure the four `#include <Trade\...>` files exist (standard MT5 install) and you compiled with a current build. |
 
 ---
 

@@ -14,7 +14,7 @@
 //+------------------------------------------------------------------+
 #property copyright "FTMO ProTrader EA"
 #property link      ""
-#property version   "3.00"
+#property version   "3.10"
 #property description "Professional FTMO-Compliant Expert Advisor"
 
 #include <Trade\Trade.mqh>
@@ -53,6 +53,7 @@ input bool     InpUseBreakeven     = true;   // Use breakeven
 input double   InpBEAtRR           = 1.0;    // Move to breakeven at R:R ratio
 input bool     InpUseTrailing      = true;   // Use trailing stop
 input double   InpTrailATRMulti    = 1.0;    // Trailing stop ATR multiplier
+input int      InpMaxSpreadPoints  = 30;     // Max spread (points) allowed to open a trade
 input int      InpMagicNumber      = 202401; // EA magic number
 
 input group "════════ SESSION FILTER ════════"
@@ -144,10 +145,57 @@ struct IndicatorValues
 };
 
 //+------------------------------------------------------------------+
+//| Input validation — reject configs that could violate FTMO rules  |
+//| or produce invalid orders. Runs once at OnInit.                  |
+//+------------------------------------------------------------------+
+bool ValidateInputs()
+{
+    bool ok = true;
+
+    if(InpRiskPerTrade <= 0.0 || InpRiskPerTrade > 5.0)
+    { Print("[FTMO EA] CONFIG ERROR: InpRiskPerTrade must be in (0, 5] %"); ok = false; }
+
+    if(InpMaxDailyLoss <= 0.0 || InpMaxDailyLoss >= 5.0)
+    { Print("[FTMO EA] CONFIG ERROR: InpMaxDailyLoss must be < 5% (FTMO hard limit)"); ok = false; }
+
+    if(InpMaxTotalLoss <= 0.0 || InpMaxTotalLoss >= 10.0)
+    { Print("[FTMO EA] CONFIG ERROR: InpMaxTotalLoss must be < 10% (FTMO hard limit)"); ok = false; }
+
+    if(InpProfitTarget <= 0.0)
+    { Print("[FTMO EA] CONFIG ERROR: InpProfitTarget must be > 0"); ok = false; }
+
+    if(InpFastEMA >= InpSlowEMA)
+    { Print("[FTMO EA] CONFIG ERROR: InpFastEMA must be < InpSlowEMA"); ok = false; }
+
+    if(InpSlowEMA >= InpTrendEMA)
+    { Print("[FTMO EA] CONFIG ERROR: InpSlowEMA must be < InpTrendEMA"); ok = false; }
+
+    if(InpATRSLMulti <= 0.0 || InpATRTPMulti <= 0.0)
+    { Print("[FTMO EA] CONFIG ERROR: ATR SL/TP multipliers must be > 0"); ok = false; }
+
+    if(InpRSIOverbought <= InpRSIOversold)
+    { Print("[FTMO EA] CONFIG ERROR: InpRSIOverbought must be > InpRSIOversold"); ok = false; }
+
+    if(InpMaxTrades < 1)
+    { Print("[FTMO EA] CONFIG ERROR: InpMaxTrades must be >= 1"); ok = false; }
+
+    if(InpMaxSpreadPoints <= 0)
+    { Print("[FTMO EA] CONFIG ERROR: InpMaxSpreadPoints must be > 0"); ok = false; }
+
+    if(InpDashIntervalMs < 50)
+    { Print("[FTMO EA] CONFIG ERROR: InpDashIntervalMs must be >= 50"); ok = false; }
+
+    return ok;
+}
+
+//+------------------------------------------------------------------+
 //| Expert initialization                                            |
 //+------------------------------------------------------------------+
 int OnInit()
 {
+    //--- Fail fast on misconfiguration (prevents an FTMO-violating live run)
+    if(!ValidateInputs()) return INIT_PARAMETERS_INCORRECT;
+
     trade.SetExpertMagicNumber(InpMagicNumber);
     trade.SetDeviationInPoints(20);
     trade.SetTypeFilling(ORDER_FILLING_IOC);
@@ -237,7 +285,7 @@ int OnInit()
 
     if(InpShowDashboard) BuildDashboard();
 
-    Print("[FTMO EA] v3.00 Initialized | Balance: ", g_initialBalance,
+    Print("[FTMO EA] v3.10 Initialized | Balance: ", g_initialBalance,
           " | Max Daily Loss: ", InpMaxDailyLoss, "% | Max DD: ", InpMaxTotalLoss, "%");
 
     return INIT_SUCCEEDED;
@@ -526,10 +574,21 @@ double CalcLotSize(double slPoints)
     if(tickSz <= 0 || slPoints <= 0 || tickVal <= 0) return 0;
 
     double riskAmt  = g_balance * InpRiskPerTrade / 100.0;
-    double lots     = riskAmt / ((slPoints / tickSz) * tickVal);
+    double valuePerPoint = (slPoints / tickSz) * tickVal;  // account-currency loss at SL per lot
+    double lots     = riskAmt / valuePerPoint;
 
     lots = MathFloor(lots / g_lotStep) * g_lotStep;
     lots = MathMax(g_minLot, MathMin(g_maxLot, lots));
+
+    //--- Safety: if clamping up to minLot pushes actual risk well past the
+    //--- target (small account / wide SL), skip rather than over-risk an FTMO run.
+    double actualRisk = lots * valuePerPoint;
+    if(actualRisk > riskAmt * 1.5)
+    {
+        Print("[FTMO EA] Trade skipped: min lot (", lots, ") would risk $",
+              DoubleToString(actualRisk, 2), " vs target $", DoubleToString(riskAmt, 2));
+        return 0;
+    }
     return lots;
 }
 
@@ -539,8 +598,19 @@ double GetMinSLDistance()
     return (g_stopLvl + spread + 5) * g_point;
 }
 
+//--- Reject entries when the spread is abnormally wide (news spikes, illiquid
+//--- hours). A blown-out spread silently wrecks the intended R:R on an FTMO run.
+bool IsSpreadOK()
+{
+    long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+    return (spread <= InpMaxSpreadPoints);
+}
+
 void ExecuteBuy(const double atr[])
 {
+    if(!IsSpreadOK())
+    { g_statusMsg = "Spread too wide — entry skipped"; Print("[FTMO EA] Buy skipped: spread too wide"); return; }
+
     double ask    = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
     double slDist = MathMax(atr[1] * InpATRSLMulti, GetMinSLDistance());
     double tpDist = slDist * g_rrRatio;
@@ -564,6 +634,9 @@ void ExecuteBuy(const double atr[])
 
 void ExecuteSell(const double atr[])
 {
+    if(!IsSpreadOK())
+    { g_statusMsg = "Spread too wide — entry skipped"; Print("[FTMO EA] Sell skipped: spread too wide"); return; }
+
     double bid    = SymbolInfoDouble(_Symbol, SYMBOL_BID);
     double slDist = MathMax(atr[1] * InpATRSLMulti, GetMinSLDistance());
     double tpDist = slDist * g_rrRatio;
@@ -826,7 +899,7 @@ void UpdateDashboard()
 
     int x = 15, y = 30, dy = 18;
 
-    CreateLabel(DashPrefix+"T0", "▌ FTMO ProTrader EA v3",      x, y,       9, clrCyan);
+    CreateLabel(DashPrefix+"T0", "▌ FTMO ProTrader EA v3.1",    x, y,       9, clrCyan);
     CreateLabel(DashPrefix+"T1", "━━━━━━━━━━━━━━━━━━━━━━━━━━━",  x, y+dy,   7, clrDimGray);
 
     CreateLabel(DashPrefix+"L1", "Account Balance:",  x,     y+dy*2, 8, titleClr);
