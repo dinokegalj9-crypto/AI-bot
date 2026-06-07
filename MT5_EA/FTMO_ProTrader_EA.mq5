@@ -14,7 +14,7 @@
 //+------------------------------------------------------------------+
 #property copyright "FTMO ProTrader EA"
 #property link      ""
-#property version   "2.00"
+#property version   "3.00"
 #property description "Professional FTMO-Compliant Expert Advisor"
 
 #include <Trade\Trade.mqh>
@@ -69,16 +69,17 @@ input bool     InpFilterMedImpact  = false;  // Filter MEDIUM impact news
 
 input group "════════ DISPLAY SETTINGS ════════"
 input bool     InpShowDashboard    = true;   // Show dashboard on chart
+input uint     InpDashIntervalMs   = 250;    // Dashboard refresh interval (ms)
 input color    InpDashBG           = clrMidnightBlue;  // Dashboard background
 input color    InpDashText         = clrWhite;         // Dashboard text color
 
-//--- Global Objects
+//--- Trade objects
 CTrade         trade;
 CPositionInfo  posInfo;
 CAccountInfo   accInfo;
 COrderInfo     ordInfo;
 
-//--- Account tracking
+//--- FTMO state
 double   g_initialBalance;
 double   g_dailyStartBalance;
 double   g_dailyStartEquity;
@@ -94,6 +95,29 @@ int      g_lossTrades;
 double   g_totalPnL;
 string   g_statusMsg;
 
+//--- Per-tick cache — refreshed ONCE at the top of OnTick, reused everywhere
+double   g_balance;
+double   g_equity;
+int      g_openTrades;
+
+//--- Symbol constants — set in OnInit, never change during a session
+int      g_digits;
+double   g_point;
+long     g_stopLvl;
+double   g_minLot;
+double   g_maxLot;
+double   g_lotStep;
+
+//--- Pre-computed trading constants
+double   g_rrRatio;       // InpATRTPMulti / InpATRSLMulti, computed once
+double   g_beDist_factor; // InpBEAtRR * InpATRSLMulti, computed once
+
+//--- Dashboard rate limiter — avoids 120+ ObjectSet + ChartRedraw on every tick
+uint     g_lastDashMs;
+
+//--- Bar detection (global so OnInit can reset it; avoids stale static on param change)
+datetime g_lastBar;
+
 //--- Indicator handles (Main TF)
 int h_fastEMA, h_slowEMA, h_trendEMA;
 int h_rsi, h_atr, h_macd;
@@ -101,7 +125,7 @@ int h_rsi, h_atr, h_macd;
 //--- Indicator handles (Trend TF)
 int h_fastEMA_TF, h_slowEMA_TF, h_trendEMA_TF, h_macd_TF;
 
-//--- Dashboard label names
+//--- Dashboard object prefix
 string DashPrefix = "FTMO_DASH_";
 
 //+------------------------------------------------------------------+
@@ -111,12 +135,10 @@ enum ENUM_SIGNAL { SIGNAL_NONE, SIGNAL_BUY, SIGNAL_SELL };
 
 struct IndicatorValues
 {
-    // Main TF
     double fastEMA[3], slowEMA[3], trendEMA[3];
     double rsi[3], atr[3];
     double macdMain[3], macdSignal[3];
-    double close[3];     // populated atomically with other buffers — avoids raw iClose() race
-    // Trend TF
+    double close[3];
     double fastEMA_TF[3], slowEMA_TF[3], trendEMA_TF[3];
     double macdMain_TF[3], macdSig_TF[3];
 };
@@ -126,11 +148,22 @@ struct IndicatorValues
 //+------------------------------------------------------------------+
 int OnInit()
 {
-    //--- Configure trade object
     trade.SetExpertMagicNumber(InpMagicNumber);
     trade.SetDeviationInPoints(20);
     trade.SetTypeFilling(ORDER_FILLING_IOC);
     trade.SetAsyncMode(false);
+
+    //--- Cache symbol constants (static for the session)
+    g_digits  = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+    g_point   = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+    g_stopLvl = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+    g_minLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+    g_maxLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+    g_lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+
+    //--- Pre-compute constant factors
+    g_rrRatio       = InpATRTPMulti / InpATRSLMulti;
+    g_beDist_factor = InpBEAtRR * InpATRSLMulti;
 
     //--- Restore persisted initial balance (survives EA restarts within a challenge)
     double savedBalance = GlobalVariableGet("FTMO_InitBal_" + _Symbol);
@@ -142,9 +175,9 @@ int OnInit()
     g_profitTargetHit = (GlobalVariableGet("FTMO_ProfitHit_" + _Symbol)  > 0);
 
     //--- Restore or initialise daily start reference (handles mid-day EA restarts)
-    double savedDaily = GlobalVariableGet("FTMO_DayBal_" + _Symbol);
+    double   savedDaily   = GlobalVariableGet("FTMO_DayBal_"  + _Symbol);
     datetime savedDayTime = (datetime)GlobalVariableGet("FTMO_DayTime_" + _Symbol);
-    datetime todayOpen = iTime(_Symbol, PERIOD_D1, 0);
+    datetime todayOpen    = iTime(_Symbol, PERIOD_D1, 0);
     if(savedDaily > 0 && savedDayTime == todayOpen)
     {
         g_dailyStartBalance = savedDaily;
@@ -157,20 +190,28 @@ int OnInit()
         GlobalVariableSet("FTMO_DayBal_"  + _Symbol, g_dailyStartBalance);
         GlobalVariableSet("FTMO_DayTime_" + _Symbol, (double)todayOpen);
     }
-    g_lastDayTime        = iTime(_Symbol, PERIOD_D1, 0);
-    g_tradingDaysCount   = 0;
-    g_dailyLimitHit      = false;
-    g_lastTradedDay      = 0;
-    g_totalTrades        = 0;
-    g_winTrades          = 0;
-    g_lossTrades         = 0;
-    g_totalPnL           = 0;
-    g_statusMsg          = "Active - Scanning for signals";
+
+    g_lastDayTime      = todayOpen;
+    g_tradingDaysCount = 0;
+    g_dailyLimitHit    = false;
+    g_lastTradedDay    = 0;
+    g_totalTrades      = 0;
+    g_winTrades        = 0;
+    g_lossTrades       = 0;
+    g_totalPnL         = 0;
+    g_statusMsg        = "Active - Scanning for signals";
+    g_lastDashMs       = 0;
+    g_lastBar          = 0;
+
+    //--- Warm up per-tick cache
+    g_balance    = accInfo.Balance();
+    g_equity     = accInfo.Equity();
+    g_openTrades = CountOpenTrades();
 
     if(g_totalLimitHit)   g_statusMsg = "!!! TOTAL HALT (persisted) — reset GlobalVar to clear !!!";
     if(g_profitTargetHit) g_statusMsg = "Profit target already reached — review challenge status";
 
-    //--- Create indicator handles - Main TF
+    //--- Indicator handles — Main TF
     h_fastEMA  = iMA(_Symbol, InpMainTF, InpFastEMA,  0, MODE_EMA, PRICE_CLOSE);
     h_slowEMA  = iMA(_Symbol, InpMainTF, InpSlowEMA,  0, MODE_EMA, PRICE_CLOSE);
     h_trendEMA = iMA(_Symbol, InpMainTF, InpTrendEMA, 0, MODE_EMA, PRICE_CLOSE);
@@ -178,7 +219,7 @@ int OnInit()
     h_atr      = iATR(_Symbol, InpMainTF, InpATRPeriod);
     h_macd     = iMACD(_Symbol, InpMainTF, InpMACDFast, InpMACDSlow, InpMACDSignal, PRICE_CLOSE);
 
-    //--- Create indicator handles - Trend TF
+    //--- Indicator handles — Trend TF
     h_fastEMA_TF  = iMA(_Symbol, InpTrendTF, InpFastEMA,  0, MODE_EMA, PRICE_CLOSE);
     h_slowEMA_TF  = iMA(_Symbol, InpTrendTF, InpSlowEMA,  0, MODE_EMA, PRICE_CLOSE);
     h_trendEMA_TF = iMA(_Symbol, InpTrendTF, InpTrendEMA, 0, MODE_EMA, PRICE_CLOSE);
@@ -194,10 +235,9 @@ int OnInit()
         return INIT_FAILED;
     }
 
-    //--- Build dashboard
     if(InpShowDashboard) BuildDashboard();
 
-    Print("[FTMO EA] Initialized | Balance: ", g_initialBalance,
+    Print("[FTMO EA] v3.00 Initialized | Balance: ", g_initialBalance,
           " | Max Daily Loss: ", InpMaxDailyLoss, "% | Max DD: ", InpMaxTotalLoss, "%");
 
     return INIT_SUCCEEDED;
@@ -208,11 +248,11 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-    IndicatorRelease(h_fastEMA);   IndicatorRelease(h_slowEMA);
-    IndicatorRelease(h_trendEMA);  IndicatorRelease(h_rsi);
-    IndicatorRelease(h_atr);       IndicatorRelease(h_macd);
+    IndicatorRelease(h_fastEMA);    IndicatorRelease(h_slowEMA);
+    IndicatorRelease(h_trendEMA);   IndicatorRelease(h_rsi);
+    IndicatorRelease(h_atr);        IndicatorRelease(h_macd);
     IndicatorRelease(h_fastEMA_TF); IndicatorRelease(h_slowEMA_TF);
-    IndicatorRelease(h_trendEMA_TF); IndicatorRelease(h_macd_TF);
+    IndicatorRelease(h_trendEMA_TF);IndicatorRelease(h_macd_TF);
     DeleteDashboard();
 }
 
@@ -221,28 +261,32 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-    //--- 1. Update FTMO risk controls every tick
+    //--- Refresh per-tick cache (ONE call each — reused everywhere this tick)
+    g_balance    = accInfo.Balance();
+    g_equity     = accInfo.Equity();
+    g_openTrades = CountOpenTrades();
+
+    //--- 1. FTMO risk controls (uses g_balance / g_equity from cache)
     UpdateRiskManagement();
 
-    //--- 2. Always manage existing positions (SL/TP/BE/Trail)
+    //--- 2. Manage positions (skips CopyBuffer entirely when nothing is open)
     ManageOpenTrades();
 
-    //--- 3. If any hard limit is hit — stop trading
+    //--- 3. Hard limit gate
     if(g_dailyLimitHit || g_totalLimitHit)
     {
         UpdateDashboard();
         return;
     }
 
-    //--- 4. Only look for new signals on bar open
-    static datetime s_lastBar = 0;
+    //--- 4. Bar-open gate (global g_lastBar resets correctly on OnInit)
     datetime curBar = iTime(_Symbol, InpMainTF, 0);
-    if(curBar == s_lastBar)
+    if(curBar == g_lastBar)
     {
         UpdateDashboard();
         return;
     }
-    s_lastBar = curBar;
+    g_lastBar = curBar;
 
     //--- 5. Trading session check
     if(!IsInTradingSession())
@@ -260,15 +304,15 @@ void OnTick()
         return;
     }
 
-    //--- 7. Max trades check
-    if(CountOpenTrades() >= InpMaxTrades)
+    //--- 7. Max trades check (g_openTrades already computed above)
+    if(g_openTrades >= InpMaxTrades)
     {
         g_statusMsg = "Max trades open (" + IntegerToString(InpMaxTrades) + ")";
         UpdateDashboard();
         return;
     }
 
-    //--- 8. Profit target — optional auto-stop
+    //--- 8. Profit target auto-stop
     if(g_profitTargetHit)
     {
         g_statusMsg = "Profit target reached! Consider stopping.";
@@ -276,7 +320,7 @@ void OnTick()
         return;
     }
 
-    //--- 9. Load indicator values
+    //--- 9. Load indicators
     IndicatorValues iv;
     if(!LoadIndicators(iv))
     {
@@ -285,7 +329,7 @@ void OnTick()
         return;
     }
 
-    //--- 10. Generate signal
+    //--- 10. Signal + execution
     ENUM_SIGNAL sig = GetSignal(iv);
 
     if(sig == SIGNAL_BUY)
@@ -336,29 +380,33 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 
 //============================================================
 // FTMO RISK MANAGEMENT
+// Uses g_balance / g_equity from per-tick cache — no extra API calls
 //============================================================
 
 void UpdateRiskManagement()
 {
-    double balance = accInfo.Balance();
-    double equity  = accInfo.Equity();
-
-    //--- Daily reset check
+    //--- Day rollover
     datetime todayBar = iTime(_Symbol, PERIOD_D1, 0);
     if(todayBar != g_lastDayTime)
     {
         g_lastDayTime       = todayBar;
-        g_dailyStartBalance = balance;
-        g_dailyStartEquity  = equity;
+        g_dailyStartBalance = g_balance;
+        g_dailyStartEquity  = g_equity;
         g_dailyLimitHit     = false;
-        GlobalVariableSet("FTMO_DayBal_"  + _Symbol, balance);
+        GlobalVariableSet("FTMO_DayBal_"  + _Symbol, g_balance);
         GlobalVariableSet("FTMO_DayTime_" + _Symbol, (double)todayBar);
-        Print("[FTMO EA] New trading day | Start balance: ", balance);
+        Print("[FTMO EA] New trading day | Start balance: ", g_balance);
     }
 
-    //--- Daily loss check (worst of equity/balance vs daily start)
-    double dailyRef   = MathMin(g_dailyStartBalance, g_dailyStartEquity);
-    double worstEquity= MathMin(balance, equity);
+    //--- Retry close if limit already hit but positions remain (broker rejection recovery)
+    if((g_dailyLimitHit || g_totalLimitHit) && g_openTrades > 0)
+    {
+        CloseAllTrades();
+        return;  // limits already enforced; skip recalculation
+    }
+
+    double dailyRef     = MathMin(g_dailyStartBalance, g_dailyStartEquity);
+    double worstEquity  = MathMin(g_balance, g_equity);
     double dailyLossPct = (dailyRef - worstEquity) / g_initialBalance * 100.0;
 
     if(!g_dailyLimitHit && dailyLossPct >= InpMaxDailyLoss)
@@ -368,9 +416,9 @@ void UpdateRiskManagement()
         g_statusMsg = StringFormat("!!! DAILY LOSS LIMIT HIT: %.2f%% !!!", dailyLossPct);
         Print("[FTMO EA] DAILY LOSS LIMIT TRIGGERED: ", dailyLossPct, "%");
         Alert("FTMO EA: Daily loss limit hit! (", DoubleToString(dailyLossPct, 2), "%)");
+        return;
     }
 
-    //--- Total drawdown check (from initial balance)
     double totalLossPct = (g_initialBalance - worstEquity) / g_initialBalance * 100.0;
 
     if(!g_totalLimitHit && totalLossPct >= InpMaxTotalLoss)
@@ -381,14 +429,10 @@ void UpdateRiskManagement()
         g_statusMsg = StringFormat("!!! TOTAL DD LIMIT HIT: %.2f%% !!!", totalLossPct);
         Print("[FTMO EA] TOTAL DRAWDOWN LIMIT TRIGGERED: ", totalLossPct, "%");
         Alert("FTMO EA: Total drawdown limit hit! (", DoubleToString(totalLossPct, 2), "%)");
+        return;
     }
 
-    //--- Retry close if limit is hit but positions remain open (broker rejection recovery)
-    if((g_dailyLimitHit || g_totalLimitHit) && CountOpenTrades() > 0)
-        CloseAllTrades();
-
-    //--- Profit target check
-    double profitPct = (balance - g_initialBalance) / g_initialBalance * 100.0;
+    double profitPct = (g_balance - g_initialBalance) / g_initialBalance * 100.0;
     if(!g_profitTargetHit && profitPct >= InpProfitTarget)
     {
         g_profitTargetHit = true;
@@ -431,12 +475,11 @@ bool LoadIndicators(IndicatorValues &iv)
 }
 
 //============================================================
-// SIGNAL GENERATION  (multi-confluence)
+// SIGNAL GENERATION (multi-confluence)
 //============================================================
 
 ENUM_SIGNAL GetSignal(const IndicatorValues &iv)
 {
-    //--- Higher TF Trend Direction
     bool htfBull = (iv.fastEMA_TF[0] > iv.slowEMA_TF[0]) &&
                    (iv.slowEMA_TF[0] > iv.trendEMA_TF[0]) &&
                    (iv.macdMain_TF[0] > iv.macdSig_TF[0]);
@@ -445,30 +488,25 @@ ENUM_SIGNAL GetSignal(const IndicatorValues &iv)
                    (iv.slowEMA_TF[0] < iv.trendEMA_TF[0]) &&
                    (iv.macdMain_TF[0] < iv.macdSig_TF[0]);
 
-    //--- Main TF: EMA crossover (bar [1] had cross, bar [0] confirms)
     bool emaBullCross = (iv.fastEMA[1] > iv.slowEMA[1]) && (iv.fastEMA[2] <= iv.slowEMA[2]);
     bool emaBearCross = (iv.fastEMA[1] < iv.slowEMA[1]) && (iv.fastEMA[2] >= iv.slowEMA[2]);
 
-    //--- Price vs 200 EMA (use snapshot close, not a live iClose call)
     bool aboveTrend = iv.close[1] > iv.trendEMA[1];
     bool belowTrend = iv.close[1] < iv.trendEMA[1];
 
-    //--- RSI confirmation (not overbought/oversold, momentum aligned)
     bool rsiBull = (iv.rsi[1] > 50.0) && (iv.rsi[1] < InpRSIOverbought);
     bool rsiBear = (iv.rsi[1] < 50.0) && (iv.rsi[1] > InpRSIOversold);
 
-    //--- MACD confirmation: above signal line AND (above zero OR rising histogram)
-    bool macdBull = (iv.macdMain[1] > iv.macdSignal[1]) && (iv.macdMain[1] > 0.0 && iv.macdMain[1] > iv.macdMain[2]);
-    bool macdBear = (iv.macdMain[1] < iv.macdSignal[1]) && (iv.macdMain[1] < 0.0 && iv.macdMain[1] < iv.macdMain[2]);
+    bool macdBull = (iv.macdMain[1] > iv.macdSignal[1]) &&
+                    (iv.macdMain[1] > 0.0 && iv.macdMain[1] > iv.macdMain[2]);
+    bool macdBear = (iv.macdMain[1] < iv.macdSignal[1]) &&
+                    (iv.macdMain[1] < 0.0 && iv.macdMain[1] < iv.macdMain[2]);
 
-    //--- Confluence: need HTF trend + EMA cross + price location + RSI + MACD
-    int bullScore = (htfBull ? 1 : 0) + (emaBullCross ? 1 : 0) +
-                    (aboveTrend ? 1 : 0) + (rsiBull ? 1 : 0) + (macdBull ? 1 : 0);
+    int bullScore = (htfBull    ? 1 : 0) + (emaBullCross ? 1 : 0) +
+                    (aboveTrend ? 1 : 0) + (rsiBull      ? 1 : 0) + (macdBull ? 1 : 0);
+    int bearScore = (htfBear    ? 1 : 0) + (emaBearCross ? 1 : 0) +
+                    (belowTrend ? 1 : 0) + (rsiBear      ? 1 : 0) + (macdBear ? 1 : 0);
 
-    int bearScore = (htfBear ? 1 : 0) + (emaBearCross ? 1 : 0) +
-                    (belowTrend ? 1 : 0) + (rsiBear ? 1 : 0) + (macdBear ? 1 : 0);
-
-    //--- Require at least 4/5 confluence factors
     if(bullScore >= 4 && emaBullCross) return SIGNAL_BUY;
     if(bearScore >= 4 && emaBearCross) return SIGNAL_SELL;
 
@@ -477,144 +515,124 @@ ENUM_SIGNAL GetSignal(const IndicatorValues &iv)
 
 //============================================================
 // TRADE EXECUTION
+// Uses per-tick g_balance and cached symbol constants
 //============================================================
 
 double CalcLotSize(double slPoints)
 {
-    double balance   = accInfo.Balance();
-    double riskAmt   = balance * InpRiskPerTrade / 100.0;
-    double tickVal   = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-    double tickSz    = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-    double point     = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+    double tickVal = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+    double tickSz  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
 
     if(tickSz <= 0 || slPoints <= 0 || tickVal <= 0) return 0;
 
-    double ticksInSL = slPoints / tickSz;
-    double lots      = riskAmt / (ticksInSL * tickVal);
+    double riskAmt  = g_balance * InpRiskPerTrade / 100.0;
+    double lots     = riskAmt / ((slPoints / tickSz) * tickVal);
 
-    double minLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-    double maxLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
-    double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-
-    lots = MathFloor(lots / lotStep) * lotStep;
-    lots = MathMax(minLot, MathMin(maxLot, lots));
+    lots = MathFloor(lots / g_lotStep) * g_lotStep;
+    lots = MathMax(g_minLot, MathMin(g_maxLot, lots));
     return lots;
 }
 
 double GetMinSLDistance()
 {
-    long stopLvl = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-    long spread  = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-    return (stopLvl + spread + 5) * point;
+    long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+    return (g_stopLvl + spread + 5) * g_point;
 }
 
 void ExecuteBuy(const double atr[])
 {
-    double ask      = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-    double slDist   = MathMax(atr[1] * InpATRSLMulti, GetMinSLDistance());
-    double tpDist   = slDist * (InpATRTPMulti / InpATRSLMulti);
-    int    digits   = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+    double ask    = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    double slDist = MathMax(atr[1] * InpATRSLMulti, GetMinSLDistance());
+    double tpDist = slDist * g_rrRatio;
 
-    double sl   = NormalizeDouble(ask - slDist, digits);
-    double tp   = NormalizeDouble(ask + tpDist, digits);
+    double sl   = NormalizeDouble(ask - slDist, g_digits);
+    double tp   = NormalizeDouble(ask + tpDist, g_digits);
     double lots = CalcLotSize(slDist);
 
-    if(lots <= 0)
-    {
-        Print("[FTMO EA] Buy skipped: invalid lot size");
-        return;
-    }
+    if(lots <= 0) { Print("[FTMO EA] Buy skipped: invalid lot size"); return; }
 
     if(trade.Buy(lots, _Symbol, ask, sl, tp, "FTMO_BUY"))
     {
-        Print("[FTMO EA] BUY opened | Lots:", lots, " SL:", sl, " TP:", tp,
-              " Risk:", InpRiskPerTrade, "% RR:", InpATRTPMulti/InpATRSLMulti);
+        Print("[FTMO EA] BUY | Lots:", lots, " SL:", sl, " TP:", tp,
+              " Risk:", InpRiskPerTrade, "% RR:", g_rrRatio);
         RecordTradingDay();
     }
     else
-    {
         Print("[FTMO EA] BUY failed: ", trade.ResultRetcode(),
               " (", trade.ResultRetcodeDescription(), ")");
-    }
 }
 
 void ExecuteSell(const double atr[])
 {
-    double bid      = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-    double slDist   = MathMax(atr[1] * InpATRSLMulti, GetMinSLDistance());
-    double tpDist   = slDist * (InpATRTPMulti / InpATRSLMulti);
-    int    digits   = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+    double bid    = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double slDist = MathMax(atr[1] * InpATRSLMulti, GetMinSLDistance());
+    double tpDist = slDist * g_rrRatio;
 
-    double sl   = NormalizeDouble(bid + slDist, digits);
-    double tp   = NormalizeDouble(bid - tpDist, digits);
+    double sl   = NormalizeDouble(bid + slDist, g_digits);
+    double tp   = NormalizeDouble(bid - tpDist, g_digits);
     double lots = CalcLotSize(slDist);
 
-    if(lots <= 0)
-    {
-        Print("[FTMO EA] Sell skipped: invalid lot size");
-        return;
-    }
+    if(lots <= 0) { Print("[FTMO EA] Sell skipped: invalid lot size"); return; }
 
     if(trade.Sell(lots, _Symbol, bid, sl, tp, "FTMO_SELL"))
     {
-        Print("[FTMO EA] SELL opened | Lots:", lots, " SL:", sl, " TP:", tp,
-              " Risk:", InpRiskPerTrade, "% RR:", InpATRTPMulti/InpATRSLMulti);
+        Print("[FTMO EA] SELL | Lots:", lots, " SL:", sl, " TP:", tp,
+              " Risk:", InpRiskPerTrade, "% RR:", g_rrRatio);
         RecordTradingDay();
     }
     else
-    {
         Print("[FTMO EA] SELL failed: ", trade.ResultRetcode(),
               " (", trade.ResultRetcodeDescription(), ")");
-    }
 }
 
 //============================================================
 // TRADE MANAGEMENT — Breakeven + Trailing Stop
+// Early-exits when no positions (avoids CopyBuffer on idle ticks)
+// Uses cached g_digits / g_point / g_stopLvl
+// Constants hoisted outside position loop
 //============================================================
 
 void ManageOpenTrades()
 {
+    if(g_openTrades == 0) return;  // nothing to manage — skip CopyBuffer
+
     double atrBuf[];
     ArraySetAsSeries(atrBuf, true);
     if(CopyBuffer(h_atr, 0, 0, 3, atrBuf) < 3) return;
     double atr = atrBuf[0];
 
+    //--- Hoist constants that are the same for every position
+    double minDist  = (g_stopLvl + 5) * g_point;
+    double beDist   = atr * g_beDist_factor;
+    double trailDst = atr * InpTrailATRMulti;
+
     for(int i = PositionsTotal() - 1; i >= 0; i--)
     {
         if(!posInfo.SelectByIndex(i)) continue;
-        if(posInfo.Symbol() != _Symbol)           continue;
-        if(posInfo.Magic()  != InpMagicNumber)    continue;
+        if(posInfo.Symbol() != _Symbol)        continue;
+        if(posInfo.Magic()  != InpMagicNumber) continue;
 
-        ulong  ticket    = posInfo.Ticket();
-        double openPx    = posInfo.PriceOpen();
-        double curSL     = posInfo.StopLoss();
-        double curTP     = posInfo.TakeProfit();
+        ulong  ticket = posInfo.Ticket();
+        double openPx = posInfo.PriceOpen();
+        double curSL  = posInfo.StopLoss();
+        double curTP  = posInfo.TakeProfit();
         ENUM_POSITION_TYPE pType = posInfo.PositionType();
-        int    digits    = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-        double point     = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-        long   stopLvl   = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-        double minDist   = (stopLvl + 5) * point;
 
         if(pType == POSITION_TYPE_BUY)
         {
             double bid       = SymbolInfoDouble(_Symbol, SYMBOL_BID);
             double profitDst = bid - openPx;
-            double beDist    = atr * InpBEAtRR * InpATRSLMulti;
-            double trailDist = atr * InpTrailATRMulti;
 
-            //--- Breakeven
             if(InpUseBreakeven && profitDst >= beDist)
             {
-                double newSL = NormalizeDouble(openPx + 2 * point, digits);
+                double newSL = NormalizeDouble(openPx + 2 * g_point, g_digits);
                 if(newSL > curSL && (bid - newSL) >= minDist)
                     trade.PositionModify(ticket, newSL, curTP);
             }
 
-            //--- Trailing stop
-            if(InpUseTrailing && profitDst >= trailDist * 1.5)
+            if(InpUseTrailing && profitDst >= trailDst * 1.5)
             {
-                double newSL = NormalizeDouble(bid - trailDist, digits);
+                double newSL = NormalizeDouble(bid - trailDst, g_digits);
                 if(newSL > curSL && (bid - newSL) >= minDist)
                     trade.PositionModify(ticket, newSL, curTP);
             }
@@ -623,21 +641,17 @@ void ManageOpenTrades()
         {
             double ask       = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double profitDst = openPx - ask;
-            double beDist    = atr * InpBEAtRR * InpATRSLMulti;
-            double trailDist = atr * InpTrailATRMulti;
 
-            //--- Breakeven: SL just above entry so trade closes near 0 P&L on reversal
             if(InpUseBreakeven && profitDst >= beDist)
             {
-                double newSL = NormalizeDouble(openPx + 2 * point, digits);
+                double newSL = NormalizeDouble(openPx + 2 * g_point, g_digits);
                 if((curSL == 0 || newSL < curSL) && (newSL - ask) >= minDist)
                     trade.PositionModify(ticket, newSL, curTP);
             }
 
-            //--- Trailing stop
-            if(InpUseTrailing && profitDst >= trailDist * 1.5)
+            if(InpUseTrailing && profitDst >= trailDst * 1.5)
             {
-                double newSL = NormalizeDouble(ask + trailDist, digits);
+                double newSL = NormalizeDouble(ask + trailDst, g_digits);
                 if((curSL == 0 || newSL < curSL) && (newSL - ask) >= minDist)
                     trade.PositionModify(ticket, newSL, curTP);
             }
@@ -655,27 +669,22 @@ bool IsInTradingSession()
     datetime    gmtTime = TimeGMT() + InpGMTOffset * 3600;
     TimeToStruct(gmtTime, dt);
 
-    int h = dt.hour;
+    int h   = dt.hour;
     int dow = dt.day_of_week;
 
-    //--- No weekends
-    if(dow == 0 || dow == 6) return false;
+    if(dow == 0 || dow == 6)           return false;
+    if(dow == 5 && h >= 21)            return false;
+    if(dow == 1 && h == 0)             return false;
 
-    //--- Avoid Friday late close
-    if(dow == 5 && h >= 21) return false;
+    if(InpUseLondon  && h >= 8  && h < 16) return true;
+    if(InpUseNewYork && h >= 13 && h < 21) return true;
 
-    //--- Avoid Sunday/Monday gap open (first 30 min)
-    if(dow == 1 && h == 0) return false;
-
-    bool inSession = false;
-    if(InpUseLondon   && h >= 8  && h < 16) inSession = true;
-    if(InpUseNewYork  && h >= 13 && h < 21) inSession = true;
-
-    return inSession;
+    return false;
 }
 
 //============================================================
-// NEWS FILTER  (MT5 built-in economic calendar)
+// NEWS FILTER (MT5 built-in economic calendar, UTC-correct)
+// Single CalendarValueHistory query per currency pair per bar
 //============================================================
 
 bool IsNewsTime()
@@ -684,27 +693,28 @@ bool IsNewsTime()
     datetime from = now - InpNewsMinBefore * 60;
     datetime to   = now + InpNewsMinAfter  * 60;
 
-    MqlCalendarValue values[];
-    string baseCurrency  = StringSubstr(_Symbol, 0, 3);
-    string quoteCurrency = StringSubstr(_Symbol, 3, 3);
+    string base  = StringSubstr(_Symbol, 0, 3);
+    string quote = StringSubstr(_Symbol, 3, 3);
 
-    //--- Pull events for base currency
-    int baseEvents = CalendarValueHistory(values, from, to, NULL, baseCurrency);
-    for(int i = 0; i < baseEvents; i++)
+    MqlCalendarValue values[];
+
+    //--- Base currency events
+    int n = CalendarValueHistory(values, from, to, NULL, base);
+    for(int i = 0; i < n; i++)
     {
         MqlCalendarEvent ev;
         if(!CalendarEventById(values[i].event_id, ev)) continue;
-        if(InpFilterHighImpact && ev.importance == CALENDAR_IMPORTANCE_HIGH)   return true;
+        if(InpFilterHighImpact && ev.importance == CALENDAR_IMPORTANCE_HIGH)     return true;
         if(InpFilterMedImpact  && ev.importance == CALENDAR_IMPORTANCE_MODERATE) return true;
     }
 
-    //--- Pull events for quote currency
-    int quoteEvents = CalendarValueHistory(values, from, to, NULL, quoteCurrency);
-    for(int i = 0; i < quoteEvents; i++)
+    //--- Quote currency events
+    n = CalendarValueHistory(values, from, to, NULL, quote);
+    for(int i = 0; i < n; i++)
     {
         MqlCalendarEvent ev;
         if(!CalendarEventById(values[i].event_id, ev)) continue;
-        if(InpFilterHighImpact && ev.importance == CALENDAR_IMPORTANCE_HIGH)   return true;
+        if(InpFilterHighImpact && ev.importance == CALENDAR_IMPORTANCE_HIGH)     return true;
         if(InpFilterMedImpact  && ev.importance == CALENDAR_IMPORTANCE_MODERATE) return true;
     }
 
@@ -712,7 +722,7 @@ bool IsNewsTime()
 }
 
 //============================================================
-// UTILITY FUNCTIONS
+// UTILITY
 //============================================================
 
 int CountOpenTrades()
@@ -729,14 +739,10 @@ int CountOpenTrades()
 void CloseAllTrades()
 {
     for(int i = PositionsTotal() - 1; i >= 0; i--)
-    {
         if(posInfo.SelectByIndex(i) &&
            posInfo.Symbol() == _Symbol &&
            posInfo.Magic()  == InpMagicNumber)
-        {
             trade.PositionClose(posInfo.Ticket());
-        }
-    }
 }
 
 void RecordTradingDay()
@@ -752,6 +758,8 @@ void RecordTradingDay()
 
 //============================================================
 // ON-CHART DASHBOARD
+// Rate-limited: redraws at most InpDashIntervalMs ms (default 250 ms)
+// Uses per-tick cache g_balance / g_equity / g_openTrades
 //============================================================
 
 void CreateLabel(string name, string text, int x, int y, int fontSize,
@@ -760,17 +768,17 @@ void CreateLabel(string name, string text, int x, int y, int fontSize,
     if(ObjectFind(0, name) < 0)
     {
         ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
-        ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-        ObjectSetInteger(0, name, OBJPROP_ANCHOR, anchor);
-        ObjectSetInteger(0, name, OBJPROP_BACK, false);
-        ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-        ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
+        ObjectSetInteger(0, name, OBJPROP_CORNER,    CORNER_LEFT_UPPER);
+        ObjectSetInteger(0, name, OBJPROP_ANCHOR,    anchor);
+        ObjectSetInteger(0, name, OBJPROP_BACK,      false);
+        ObjectSetInteger(0, name, OBJPROP_SELECTABLE,false);
+        ObjectSetString (0, name, OBJPROP_FONT,      "Consolas");
     }
-    ObjectSetString (0, name, OBJPROP_TEXT, text);
+    ObjectSetString (0, name, OBJPROP_TEXT,      text);
     ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
     ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
-    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
-    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+    ObjectSetInteger(0, name, OBJPROP_FONTSIZE,  fontSize);
+    ObjectSetInteger(0, name, OBJPROP_COLOR,     clr);
 }
 
 void CreateRect(string name, int x, int y, int width, int height, color clr)
@@ -778,20 +786,20 @@ void CreateRect(string name, int x, int y, int width, int height, color clr)
     if(ObjectFind(0, name) < 0)
         ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
 
-    ObjectSetInteger(0, name, OBJPROP_CORNER,     CORNER_LEFT_UPPER);
-    ObjectSetInteger(0, name, OBJPROP_XDISTANCE,  x);
-    ObjectSetInteger(0, name, OBJPROP_YDISTANCE,  y);
-    ObjectSetInteger(0, name, OBJPROP_XSIZE,      width);
-    ObjectSetInteger(0, name, OBJPROP_YSIZE,      height);
-    ObjectSetInteger(0, name, OBJPROP_BGCOLOR,    clr);
+    ObjectSetInteger(0, name, OBJPROP_CORNER,      CORNER_LEFT_UPPER);
+    ObjectSetInteger(0, name, OBJPROP_XDISTANCE,   x);
+    ObjectSetInteger(0, name, OBJPROP_YDISTANCE,   y);
+    ObjectSetInteger(0, name, OBJPROP_XSIZE,       width);
+    ObjectSetInteger(0, name, OBJPROP_YSIZE,       height);
+    ObjectSetInteger(0, name, OBJPROP_BGCOLOR,     clr);
     ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
-    ObjectSetInteger(0, name, OBJPROP_BACK,       true);
-    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+    ObjectSetInteger(0, name, OBJPROP_BACK,        true);
+    ObjectSetInteger(0, name, OBJPROP_SELECTABLE,  false);
 }
 
 void BuildDashboard()
 {
-    CreateRect(DashPrefix+"BG", 10, 25, 310, 280, InpDashBG);
+    CreateRect(DashPrefix+"BG", 10, 25, 310, 285, InpDashBG);
     ChartRedraw(0);
 }
 
@@ -799,84 +807,87 @@ void UpdateDashboard()
 {
     if(!InpShowDashboard) return;
 
-    double balance  = accInfo.Balance();
-    double equity   = accInfo.Equity();
-    double profitPct = (balance - g_initialBalance) / g_initialBalance * 100.0;
+    //--- Rate limiter: skip redraw if last update was less than InpDashIntervalMs ago
+    uint now = GetTickCount();
+    if(now - g_lastDashMs < InpDashIntervalMs) return;
+    g_lastDashMs = now;
+
+    //--- All values sourced from per-tick cache — no extra API calls here
+    double profitPct = (g_balance - g_initialBalance) / g_initialBalance * 100.0;
     double dailyRef  = MathMin(g_dailyStartBalance, g_dailyStartEquity);
-    double dailyLoss = (dailyRef - MathMin(balance, equity)) / g_initialBalance * 100.0;
-    double totalDD   = (g_initialBalance - MathMin(balance, equity)) / g_initialBalance * 100.0;
-    int    openTrades = CountOpenTrades();
+    double dailyLoss = (dailyRef - MathMin(g_balance, g_equity)) / g_initialBalance * 100.0;
+    double totalDD   = (g_initialBalance - MathMin(g_balance, g_equity)) / g_initialBalance * 100.0;
     double winRate   = (g_totalTrades > 0) ? (double)g_winTrades / g_totalTrades * 100.0 : 0.0;
 
-    color titleClr  = InpDashText;
-    color valClr    = clrLightGreen;
-    color warnClr   = clrOrange;
-    color alertClr  = clrRed;
+    color titleClr = InpDashText;
+    color valClr   = clrLightGreen;
+    color warnClr  = clrOrange;
+    color alertClr = clrRed;
 
     int x = 15, y = 30, dy = 18;
 
-    CreateLabel(DashPrefix+"T0", "▌ FTMO ProTrader EA",    x, y,       9, clrCyan);
-    CreateLabel(DashPrefix+"T1", "━━━━━━━━━━━━━━━━━━━━━━━━━━━", x, y+dy*1, 7, clrDimGray);
+    CreateLabel(DashPrefix+"T0", "▌ FTMO ProTrader EA v3",      x, y,       9, clrCyan);
+    CreateLabel(DashPrefix+"T1", "━━━━━━━━━━━━━━━━━━━━━━━━━━━",  x, y+dy,   7, clrDimGray);
 
-    CreateLabel(DashPrefix+"L1", "Account Balance:",  x,    y+dy*2,  8, titleClr);
-    CreateLabel(DashPrefix+"V1", StringFormat("$%.2f", balance), x+155, y+dy*2, 8, valClr);
+    CreateLabel(DashPrefix+"L1", "Account Balance:",  x,     y+dy*2, 8, titleClr);
+    CreateLabel(DashPrefix+"V1", StringFormat("$%.2f", g_balance), x+155, y+dy*2, 8, valClr);
 
-    CreateLabel(DashPrefix+"L2", "Account Equity:",   x,    y+dy*3,  8, titleClr);
-    CreateLabel(DashPrefix+"V2", StringFormat("$%.2f", equity),  x+155, y+dy*3, 8, valClr);
+    CreateLabel(DashPrefix+"L2", "Account Equity:",   x,     y+dy*3, 8, titleClr);
+    CreateLabel(DashPrefix+"V2", StringFormat("$%.2f", g_equity),   x+155, y+dy*3, 8, valClr);
 
-    CreateLabel(DashPrefix+"L3", "P&L (all time):",   x,    y+dy*4,  8, titleClr);
-    color pnlClr = (profitPct >= 0) ? clrLightGreen : clrRed;
-    CreateLabel(DashPrefix+"V3", StringFormat("%.2f%%", profitPct), x+155, y+dy*4, 8, pnlClr);
+    CreateLabel(DashPrefix+"L3", "P&L (all time):",   x,     y+dy*4, 8, titleClr);
+    CreateLabel(DashPrefix+"V3", StringFormat("%.2f%%", profitPct),
+                x+155, y+dy*4, 8, (profitPct >= 0) ? clrLightGreen : clrRed);
 
-    CreateLabel(DashPrefix+"T2", "━━━━━━━━━━━━━━━━━━━━━━━━━━━", x, y+dy*5, 7, clrDimGray);
+    CreateLabel(DashPrefix+"T2", "━━━━━━━━━━━━━━━━━━━━━━━━━━━",  x, y+dy*5, 7, clrDimGray);
     CreateLabel(DashPrefix+"LH", "FTMO LIMITS",        x, y+dy*6,   8, clrCyan);
 
-    color dlClr = (dailyLoss >= InpMaxDailyLoss*0.8) ? alertClr : (dailyLoss >= InpMaxDailyLoss*0.5 ? warnClr : valClr);
-    CreateLabel(DashPrefix+"L4", "Daily Loss:",        x,    y+dy*7,  8, titleClr);
-    CreateLabel(DashPrefix+"V4", StringFormat("%.2f%% / %.1f%%", dailyLoss, InpMaxDailyLoss), x+155, y+dy*7, 8, dlClr);
+    color dlClr = (dailyLoss >= InpMaxDailyLoss*0.8) ? alertClr :
+                  (dailyLoss >= InpMaxDailyLoss*0.5) ? warnClr : valClr;
+    CreateLabel(DashPrefix+"L4", "Daily Loss:",  x,     y+dy*7, 8, titleClr);
+    CreateLabel(DashPrefix+"V4", StringFormat("%.2f%% / %.1f%%", dailyLoss, InpMaxDailyLoss),
+                x+155, y+dy*7, 8, dlClr);
 
-    color ddClr = (totalDD >= InpMaxTotalLoss*0.8) ? alertClr : (totalDD >= InpMaxTotalLoss*0.5 ? warnClr : valClr);
-    CreateLabel(DashPrefix+"L5", "Total Drawdown:",    x,    y+dy*8,  8, titleClr);
-    CreateLabel(DashPrefix+"V5", StringFormat("%.2f%% / %.1f%%", totalDD, InpMaxTotalLoss), x+155, y+dy*8, 8, ddClr);
+    color ddClr = (totalDD >= InpMaxTotalLoss*0.8) ? alertClr :
+                  (totalDD >= InpMaxTotalLoss*0.5) ? warnClr : valClr;
+    CreateLabel(DashPrefix+"L5", "Total Drawdown:", x,  y+dy*8, 8, titleClr);
+    CreateLabel(DashPrefix+"V5", StringFormat("%.2f%% / %.1f%%", totalDD, InpMaxTotalLoss),
+                x+155, y+dy*8, 8, ddClr);
 
-    color ptClr = (profitPct >= InpProfitTarget) ? clrGold : valClr;
-    CreateLabel(DashPrefix+"L6", "Profit Target:",     x,    y+dy*9,  8, titleClr);
-    CreateLabel(DashPrefix+"V6", StringFormat("%.2f%% / %.1f%%", profitPct, InpProfitTarget), x+155, y+dy*9, 8, ptClr);
+    CreateLabel(DashPrefix+"L6", "Profit Target:", x,   y+dy*9, 8, titleClr);
+    CreateLabel(DashPrefix+"V6", StringFormat("%.2f%% / %.1f%%", profitPct, InpProfitTarget),
+                x+155, y+dy*9, 8, (profitPct >= InpProfitTarget) ? clrGold : valClr);
 
-    CreateLabel(DashPrefix+"L7", "Trading Days:",      x,    y+dy*10, 8, titleClr);
-    color tdClr = (g_tradingDaysCount >= InpMinTradingDays) ? clrGold : warnClr;
-    CreateLabel(DashPrefix+"V7", StringFormat("%d / %d min", g_tradingDaysCount, InpMinTradingDays), x+155, y+dy*10, 8, tdClr);
+    CreateLabel(DashPrefix+"L7", "Trading Days:", x,    y+dy*10, 8, titleClr);
+    CreateLabel(DashPrefix+"V7", StringFormat("%d / %d min", g_tradingDaysCount, InpMinTradingDays),
+                x+155, y+dy*10, 8, (g_tradingDaysCount >= InpMinTradingDays) ? clrGold : warnClr);
 
-    CreateLabel(DashPrefix+"T3", "━━━━━━━━━━━━━━━━━━━━━━━━━━━", x, y+dy*11, 7, clrDimGray);
-    CreateLabel(DashPrefix+"LS", "STATISTICS",          x, y+dy*12,   8, clrCyan);
+    CreateLabel(DashPrefix+"T3", "━━━━━━━━━━━━━━━━━━━━━━━━━━━",  x, y+dy*11, 7, clrDimGray);
+    CreateLabel(DashPrefix+"LS", "STATISTICS",  x, y+dy*12, 8, clrCyan);
 
-    CreateLabel(DashPrefix+"L8", "Open Trades:",       x,    y+dy*13, 8, titleClr);
-    CreateLabel(DashPrefix+"V8", IntegerToString(openTrades), x+155, y+dy*13, 8, (openTrades>0?clrYellow:valClr));
+    CreateLabel(DashPrefix+"L8", "Open Trades:",  x,   y+dy*13, 8, titleClr);
+    CreateLabel(DashPrefix+"V8", IntegerToString(g_openTrades),
+                x+155, y+dy*13, 8, (g_openTrades > 0) ? clrYellow : valClr);
 
-    CreateLabel(DashPrefix+"L9", "Total Trades:",      x,    y+dy*14, 8, titleClr);
+    CreateLabel(DashPrefix+"L9", "Total Trades:", x,   y+dy*14, 8, titleClr);
     CreateLabel(DashPrefix+"V9", IntegerToString(g_totalTrades), x+155, y+dy*14, 8, valClr);
 
-    CreateLabel(DashPrefix+"LA", "Win Rate:",           x,    y+dy*15, 8, titleClr);
-    color wrClr = (winRate >= 50) ? clrLightGreen : (winRate > 0 ? warnClr : clrGray);
-    CreateLabel(DashPrefix+"VA", StringFormat("%.1f%% (%dW/%dL)", winRate, g_winTrades, g_lossTrades), x+155, y+dy*15, 8, wrClr);
+    CreateLabel(DashPrefix+"LA", "Win Rate:",     x,   y+dy*15, 8, titleClr);
+    CreateLabel(DashPrefix+"VA", StringFormat("%.1f%% (%dW/%dL)", winRate, g_winTrades, g_lossTrades),
+                x+155, y+dy*15, 8,
+                (winRate >= 50) ? clrLightGreen : (winRate > 0) ? warnClr : clrGray);
 
     CreateLabel(DashPrefix+"T4", "━━━━━━━━━━━━━━━━━━━━━━━━━━━", x, y+dy*14+18, 7, clrDimGray);
-    color statClr = (g_dailyLimitHit || g_totalLimitHit) ? alertClr :
-                    (g_profitTargetHit ? clrGold : clrLightBlue);
-    CreateLabel(DashPrefix+"STATUS", g_statusMsg, x, y+dy*15+18, 7, statClr);
+    CreateLabel(DashPrefix+"STATUS", g_statusMsg, x, y+dy*15+18, 7,
+                (g_dailyLimitHit || g_totalLimitHit) ? alertClr :
+                (g_profitTargetHit ? clrGold : clrLightBlue));
 
     ChartRedraw(0);
 }
 
 void DeleteDashboard()
 {
-    long total = ObjectsTotal(0, 0, -1);
-    for(long i = total - 1; i >= 0; i--)
-    {
-        string name = ObjectName(0, (int)i, 0, -1);
-        if(StringFind(name, DashPrefix) == 0)
-            ObjectDelete(0, name);
-    }
+    ObjectsDeleteAll(0, DashPrefix);
     ChartRedraw(0);
 }
 //+------------------------------------------------------------------+
