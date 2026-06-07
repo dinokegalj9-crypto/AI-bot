@@ -115,6 +115,7 @@ struct IndicatorValues
     double fastEMA[3], slowEMA[3], trendEMA[3];
     double rsi[3], atr[3];
     double macdMain[3], macdSignal[3];
+    double close[3];     // populated atomically with other buffers — avoids raw iClose() race
     // Trend TF
     double fastEMA_TF[3], slowEMA_TF[3], trendEMA_TF[3];
     double macdMain_TF[3], macdSig_TF[3];
@@ -131,21 +132,43 @@ int OnInit()
     trade.SetTypeFilling(ORDER_FILLING_IOC);
     trade.SetAsyncMode(false);
 
-    //--- Initialize account tracking
-    g_initialBalance     = accInfo.Balance();
-    g_dailyStartBalance  = g_initialBalance;
-    g_dailyStartEquity   = accInfo.Equity();
+    //--- Restore persisted initial balance (survives EA restarts within a challenge)
+    double savedBalance = GlobalVariableGet("FTMO_InitBal_" + _Symbol);
+    g_initialBalance = (savedBalance > 0) ? savedBalance : accInfo.Balance();
+    GlobalVariableSet("FTMO_InitBal_" + _Symbol, g_initialBalance);
+
+    //--- Restore persisted halt flags
+    g_totalLimitHit   = (GlobalVariableGet("FTMO_TotalHalt_" + _Symbol) > 0);
+    g_profitTargetHit = (GlobalVariableGet("FTMO_ProfitHit_" + _Symbol)  > 0);
+
+    //--- Restore or initialise daily start reference (handles mid-day EA restarts)
+    double savedDaily = GlobalVariableGet("FTMO_DayBal_" + _Symbol);
+    datetime savedDayTime = (datetime)GlobalVariableGet("FTMO_DayTime_" + _Symbol);
+    datetime todayOpen = iTime(_Symbol, PERIOD_D1, 0);
+    if(savedDaily > 0 && savedDayTime == todayOpen)
+    {
+        g_dailyStartBalance = savedDaily;
+        g_dailyStartEquity  = savedDaily;
+    }
+    else
+    {
+        g_dailyStartBalance = accInfo.Balance();
+        g_dailyStartEquity  = accInfo.Equity();
+        GlobalVariableSet("FTMO_DayBal_"  + _Symbol, g_dailyStartBalance);
+        GlobalVariableSet("FTMO_DayTime_" + _Symbol, (double)todayOpen);
+    }
     g_lastDayTime        = iTime(_Symbol, PERIOD_D1, 0);
     g_tradingDaysCount   = 0;
     g_dailyLimitHit      = false;
-    g_totalLimitHit      = false;
-    g_profitTargetHit    = false;
     g_lastTradedDay      = 0;
     g_totalTrades        = 0;
     g_winTrades          = 0;
     g_lossTrades         = 0;
     g_totalPnL           = 0;
     g_statusMsg          = "Active - Scanning for signals";
+
+    if(g_totalLimitHit)   g_statusMsg = "!!! TOTAL HALT (persisted) — reset GlobalVar to clear !!!";
+    if(g_profitTargetHit) g_statusMsg = "Profit target already reached — review challenge status";
 
     //--- Create indicator handles - Main TF
     h_fastEMA  = iMA(_Symbol, InpMainTF, InpFastEMA,  0, MODE_EMA, PRICE_CLOSE);
@@ -328,6 +351,8 @@ void UpdateRiskManagement()
         g_dailyStartBalance = balance;
         g_dailyStartEquity  = equity;
         g_dailyLimitHit     = false;
+        GlobalVariableSet("FTMO_DayBal_"  + _Symbol, balance);
+        GlobalVariableSet("FTMO_DayTime_" + _Symbol, (double)todayBar);
         Print("[FTMO EA] New trading day | Start balance: ", balance);
     }
 
@@ -351,17 +376,23 @@ void UpdateRiskManagement()
     if(!g_totalLimitHit && totalLossPct >= InpMaxTotalLoss)
     {
         g_totalLimitHit = true;
+        GlobalVariableSet("FTMO_TotalHalt_" + _Symbol, 1);
         CloseAllTrades();
         g_statusMsg = StringFormat("!!! TOTAL DD LIMIT HIT: %.2f%% !!!", totalLossPct);
         Print("[FTMO EA] TOTAL DRAWDOWN LIMIT TRIGGERED: ", totalLossPct, "%");
         Alert("FTMO EA: Total drawdown limit hit! (", DoubleToString(totalLossPct, 2), "%)");
     }
 
+    //--- Retry close if limit is hit but positions remain open (broker rejection recovery)
+    if((g_dailyLimitHit || g_totalLimitHit) && CountOpenTrades() > 0)
+        CloseAllTrades();
+
     //--- Profit target check
     double profitPct = (balance - g_initialBalance) / g_initialBalance * 100.0;
     if(!g_profitTargetHit && profitPct >= InpProfitTarget)
     {
         g_profitTargetHit = true;
+        GlobalVariableSet("FTMO_ProfitHit_" + _Symbol, 1);
         Print("[FTMO EA] PROFIT TARGET REACHED: ", profitPct, "%");
         Alert("FTMO EA: Profit target reached! (", DoubleToString(profitPct, 2), "%) - Review your FTMO challenge.");
     }
@@ -385,6 +416,9 @@ bool LoadIndicators(IndicatorValues &iv)
     COPY_SERIES(h_atr,      0, iv.atr)
     COPY_SERIES(h_macd,     0, iv.macdMain)
     COPY_SERIES(h_macd,     1, iv.macdSignal)
+
+    ArraySetAsSeries(iv.close, true);
+    if(CopyClose(_Symbol, InpMainTF, 0, bars, iv.close) < bars) return false;
 
     COPY_SERIES(h_fastEMA_TF,  0, iv.fastEMA_TF)
     COPY_SERIES(h_slowEMA_TF,  0, iv.slowEMA_TF)
@@ -415,18 +449,17 @@ ENUM_SIGNAL GetSignal(const IndicatorValues &iv)
     bool emaBullCross = (iv.fastEMA[1] > iv.slowEMA[1]) && (iv.fastEMA[2] <= iv.slowEMA[2]);
     bool emaBearCross = (iv.fastEMA[1] < iv.slowEMA[1]) && (iv.fastEMA[2] >= iv.slowEMA[2]);
 
-    //--- Price vs 200 EMA
-    double closePrice = iClose(_Symbol, InpMainTF, 1);
-    bool aboveTrend = closePrice > iv.trendEMA[1];
-    bool belowTrend = closePrice < iv.trendEMA[1];
+    //--- Price vs 200 EMA (use snapshot close, not a live iClose call)
+    bool aboveTrend = iv.close[1] > iv.trendEMA[1];
+    bool belowTrend = iv.close[1] < iv.trendEMA[1];
 
     //--- RSI confirmation (not overbought/oversold, momentum aligned)
     bool rsiBull = (iv.rsi[1] > 50.0) && (iv.rsi[1] < InpRSIOverbought);
     bool rsiBear = (iv.rsi[1] < 50.0) && (iv.rsi[1] > InpRSIOversold);
 
-    //--- MACD confirmation on main TF
-    bool macdBull = (iv.macdMain[1] > iv.macdSignal[1]) && (iv.macdMain[1] > 0.0 || iv.macdMain[1] > iv.macdMain[2]);
-    bool macdBear = (iv.macdMain[1] < iv.macdSignal[1]) && (iv.macdMain[1] < 0.0 || iv.macdMain[1] < iv.macdMain[2]);
+    //--- MACD confirmation: above signal line AND (above zero OR rising histogram)
+    bool macdBull = (iv.macdMain[1] > iv.macdSignal[1]) && (iv.macdMain[1] > 0.0 && iv.macdMain[1] > iv.macdMain[2]);
+    bool macdBear = (iv.macdMain[1] < iv.macdSignal[1]) && (iv.macdMain[1] < 0.0 && iv.macdMain[1] < iv.macdMain[2]);
 
     //--- Confluence: need HTF trend + EMA cross + price location + RSI + MACD
     int bullScore = (htfBull ? 1 : 0) + (emaBullCross ? 1 : 0) +
@@ -480,7 +513,7 @@ void ExecuteBuy(const double atr[])
 {
     double ask      = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
     double slDist   = MathMax(atr[1] * InpATRSLMulti, GetMinSLDistance());
-    double tpDist   = atr[1] * InpATRTPMulti;
+    double tpDist   = slDist * (InpATRTPMulti / InpATRSLMulti);
     int    digits   = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
 
     double sl   = NormalizeDouble(ask - slDist, digits);
@@ -510,7 +543,7 @@ void ExecuteSell(const double atr[])
 {
     double bid      = SymbolInfoDouble(_Symbol, SYMBOL_BID);
     double slDist   = MathMax(atr[1] * InpATRSLMulti, GetMinSLDistance());
-    double tpDist   = atr[1] * InpATRTPMulti;
+    double tpDist   = slDist * (InpATRTPMulti / InpATRSLMulti);
     int    digits   = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
 
     double sl   = NormalizeDouble(bid + slDist, digits);
@@ -545,7 +578,7 @@ void ManageOpenTrades()
     double atrBuf[];
     ArraySetAsSeries(atrBuf, true);
     if(CopyBuffer(h_atr, 0, 0, 3, atrBuf) < 3) return;
-    double atr = atrBuf[1];
+    double atr = atrBuf[0];
 
     for(int i = PositionsTotal() - 1; i >= 0; i--)
     {
@@ -593,10 +626,10 @@ void ManageOpenTrades()
             double beDist    = atr * InpBEAtRR * InpATRSLMulti;
             double trailDist = atr * InpTrailATRMulti;
 
-            //--- Breakeven
+            //--- Breakeven: SL just above entry so trade closes near 0 P&L on reversal
             if(InpUseBreakeven && profitDst >= beDist)
             {
-                double newSL = NormalizeDouble(openPx - 2 * point, digits);
+                double newSL = NormalizeDouble(openPx + 2 * point, digits);
                 if((curSL == 0 || newSL < curSL) && (newSL - ask) >= minDist)
                     trade.PositionModify(ticket, newSL, curTP);
             }
@@ -647,7 +680,7 @@ bool IsInTradingSession()
 
 bool IsNewsTime()
 {
-    datetime now  = TimeCurrent();
+    datetime now  = TimeGMT();
     datetime from = now - InpNewsMinBefore * 60;
     datetime to   = now + InpNewsMinAfter  * 60;
 
