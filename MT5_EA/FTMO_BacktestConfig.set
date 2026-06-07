@@ -1,0 +1,50 @@
+; FTMO ProTrader EA - Recommended Backtest / Optimization Settings
+; Load this file in MT5 Strategy Tester → Load Settings
+
+[Tester]
+Expert=FTMO_ProTrader_EA
+Symbol=EURUSD
+Period=H1
+Deposit=100000
+Currency=USD
+Leverage=1:100
+Model=1                  ; Every tick based on real ticks
+FromDate=2023.01.01
+ToDate=2024.12.31
+Optimization=0           ; 0=disabled, 1=slow complete, 2=fast genetic
+
+[EA]
+InpRiskPerTrade=1.0
+InpMaxDailyLoss=4.5
+InpMaxTotalLoss=9.0
+InpProfitTarget=10.0
+InpMinTradingDays=4
+InpMainTF=16385          ; PERIOD_H1
+InpTrendTF=16388         ; PERIOD_H4
+InpFastEMA=20
+InpSlowEMA=50
+InpTrendEMA=200
+InpRSIPeriod=14
+InpRSIOverbought=65.0
+InpRSIOversold=35.0
+InpMACDFast=12
+InpMACDSlow=26
+InpMACDSignal=9
+InpATRPeriod=14
+InpATRSLMulti=1.5
+InpATRTPMulti=2.5
+InpMaxTrades=1
+InpUseBreakeven=1
+InpBEAtRR=1.0
+InpUseTrailing=1
+InpTrailATRMulti=1.0
+InpMagicNumber=202401
+InpUseLondon=1
+InpUseNewYork=1
+InpGMTOffset=0
+InpUseNewsFilter=1
+InpNewsMinBefore=30
+InpNewsMinAfter=30
+InpFilterHighImpact=1
+InpFilterMedImpact=0
+InpShowDashboard=1
