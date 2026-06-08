@@ -1519,9 +1519,10 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest     &request,
                         const MqlTradeResult      &result)
 {
-    //--- request/result are unused here — touch them to silence the
-    //    "unreferenced formal parameter" warnings without changing behaviour.
-    (void)request; (void)result;
+    //--- request/result are part of the fixed handler signature but unused
+    //    here. This never-executed branch references them so MetaEditor does
+    //    not emit "unreferenced formal parameter" warnings.
+    if(false) Print(request.symbol, result.retcode);
 
     //--- We are interested only in deal-add transactions (closed positions)
     if(trans.type != TRADE_TRANSACTION_DEAL_ADD) return;
