@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
-//|                                            FTMO_ProTrader_EA.mq5 |
+//|                                             MAX_ProTrader_EA.mq5 |
 //+------------------------------------------------------------------+
-#property copyright "FTMO ProTrader EA"
+#property copyright "MAX ProTrader EA"
 #property link      ""
 #property version   "5.00"
-#property description "FTMO-Compliant Professional Expert Advisor with 5 PID Controllers"
+#property description "MAX (Uncapped) Professional Expert Advisor with 5 PID Controllers"
 
 //+------------------------------------------------------------------+
 //| Standard Library Includes                                        |
@@ -17,18 +17,18 @@
 //+------------------------------------------------------------------+
 //| ════════ EA MODE ════════                                        |
 //+------------------------------------------------------------------+
-input bool   InpFTMOMode           = true;    // true = FTMO rules enforced strictly
-input bool   InpEnforceDailyLimit  = true;    // Halt on daily loss limit
+input bool   InpFTMOMode           = false;   // true = FTMO rules enforced strictly
+input bool   InpEnforceDailyLimit  = false;   // Halt on daily loss limit
 input bool   InpEnforceTotalLimit  = true;    // Halt on total drawdown limit
-input bool   InpEnforceProfitStop  = true;    // Halt on profit target reached
+input bool   InpEnforceProfitStop  = false;   // Halt on profit target reached
 
 //+------------------------------------------------------------------+
 //| ════════ FTMO RISK MANAGEMENT ════════                           |
 //+------------------------------------------------------------------+
-input double InpRiskPerTrade       = 1.0;     // Base risk per trade (% of balance)
-input double InpMaxDailyLoss       = 4.5;     // Max daily loss % [FTMO: 5% hard limit]
-input double InpMaxTotalLoss       = 9.0;     // Max total drawdown % [FTMO: 10%]
-input double InpProfitTarget       = 10.0;    // Profit target % [FTMO Challenge]
+input double InpRiskPerTrade       = 2.0;     // Base risk per trade (% of balance)
+input double InpMaxDailyLoss       = 8.0;     // Max daily loss % [not enforced, stored only]
+input double InpMaxTotalLoss       = 45.0;    // Max total drawdown % [50% kill-switch]
+input double InpProfitTarget       = 50.0;    // Profit target % [not enforced, tracked only]
 input int    InpMinTradingDays     = 4;       // Minimum required trading days
 
 //+------------------------------------------------------------------+
@@ -52,13 +52,13 @@ input double InpATRTPMulti         = 2.5;     // ATR take profit multiplier
 //+------------------------------------------------------------------+
 //| ════════ TRADE MANAGEMENT ════════                               |
 //+------------------------------------------------------------------+
-input int    InpMaxTrades          = 1;       // Max simultaneous open trades
+input int    InpMaxTrades          = 5;       // Max simultaneous open trades
 input bool   InpUseBreakeven       = true;    // Use breakeven stop
 input double InpBEAtRR             = 1.0;     // Move to breakeven at R:R ratio
 input bool   InpUseTrailing        = true;    // Use trailing stop
 input double InpTrailATRMulti      = 1.0;     // Trailing stop ATR multiplier
 input int    InpMaxSpreadPoints    = 30;      // Max spread (points) base threshold
-input int    InpMagicNumber        = 202401;  // EA magic number
+input int    InpMagicNumber        = 202402;  // EA magic number
 
 //+------------------------------------------------------------------+
 //| ════════ SESSION FILTER ════════                                 |
@@ -81,10 +81,10 @@ input bool   InpFilterMedImpact    = false;   // Block MEDIUM impact events
 //+------------------------------------------------------------------+
 input bool   InpPIDEnabled         = true;    // Enable PID adaptive risk control
 input double InpPIDMinRisk         = 0.10;    // PID minimum risk floor (% balance)
-input double InpPIDMaxRisk         = 2.00;    // PID maximum risk ceiling (% balance)
+input double InpPIDMaxRisk         = 5.00;    // PID maximum risk ceiling (% balance)
 input double InpPIDDeadband        = 0.05;    // Deadband — ignore errors smaller than this
 input double InpPIDDerivFilter     = 0.50;    // Derivative low-pass filter (0=off, 1=full)
-input double InpPIDMaxStep         = 0.25;    // Max risk change per bar (slew rate limit)
+input double InpPIDMaxStep         = 0.50;    // Max risk change per bar (slew rate limit)
 
 //+------------------------------------------------------------------+
 //| ════════ EQUITY PID (EPID) ════════                              |
@@ -92,7 +92,7 @@ input double InpPIDMaxStep         = 0.25;    // Max risk change per bar (slew r
 input double InpEPIDKp             = 2.0;     // EPID proportional gain
 input double InpEPIDKi             = 0.1;     // EPID integral gain
 input double InpEPIDKd             = 0.5;     // EPID derivative gain
-input double InpEPIDTarget         = 0.50;    // EPID daily profit target (% balance)
+input double InpEPIDTarget         = 0.60;    // EPID daily profit target (% balance)
 
 //+------------------------------------------------------------------+
 //| ════════ VOLATILITY PID (VPID) ════════                         |

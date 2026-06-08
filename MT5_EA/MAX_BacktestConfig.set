@@ -1,8 +1,8 @@
-; FTMO ProTrader EA v5.00 — Backtest / Optimization Settings
+; MAX ProTrader EA v5.00 — Backtest / Optimization Settings
 ; Load this file in MT5 Strategy Tester → Load Settings
 
 [Tester]
-Expert=FTMO_ProTrader_EA
+Expert=MAX_ProTrader_EA
 Symbol=EURUSD
 Period=H1
 Deposit=100000
@@ -11,17 +11,17 @@ Leverage=1:100
 Model=1                  ; Every tick based on real ticks
 FromDate=2023.01.01
 ToDate=2024.12.31
-Optimization=0           ; 0=disabled, 1=slow complete, 2=fast genetic
+Optimization=0
 
 [EA]
-InpFTMOMode=1
-InpEnforceDailyLimit=1
+InpFTMOMode=0
+InpEnforceDailyLimit=0
 InpEnforceTotalLimit=1
-InpEnforceProfitStop=1
-InpRiskPerTrade=1.0
-InpMaxDailyLoss=4.5
-InpMaxTotalLoss=9.0
-InpProfitTarget=10.0
+InpEnforceProfitStop=0
+InpRiskPerTrade=2.0
+InpMaxDailyLoss=8.0
+InpMaxTotalLoss=45.0
+InpProfitTarget=50.0
 InpMinTradingDays=4
 InpMainTF=16385          ; PERIOD_H1
 InpTrendTF=16388         ; PERIOD_H4
@@ -37,31 +37,31 @@ InpMACDSignal=9
 InpATRPeriod=14
 InpATRSLMulti=1.5
 InpATRTPMulti=2.5
-InpMaxTrades=1
+InpMaxTrades=5
 InpUseBreakeven=1
 InpBEAtRR=1.0
 InpUseTrailing=1
 InpTrailATRMulti=1.0
 InpMaxSpreadPoints=30
-InpMagicNumber=202401
+InpMagicNumber=202402
 InpUseLondon=1
 InpUseNewYork=1
 InpGMTOffset=0
-InpUseNewsFilter=1
+InpUseNewsFilter=0
 InpNewsMinBefore=30
 InpNewsMinAfter=30
 InpFilterHighImpact=1
 InpFilterMedImpact=0
 InpPIDEnabled=1
 InpPIDMinRisk=0.10
-InpPIDMaxRisk=2.00
+InpPIDMaxRisk=5.00
 InpPIDDeadband=0.05
 InpPIDDerivFilter=0.50
-InpPIDMaxStep=0.25
+InpPIDMaxStep=0.50
 InpEPIDKp=2.0
 InpEPIDKi=0.1
 InpEPIDKd=0.5
-InpEPIDTarget=0.50
+InpEPIDTarget=0.60
 InpVPIDEnabled=1
 InpVPIDKp=1.5
 InpVPIDKi=0.05
