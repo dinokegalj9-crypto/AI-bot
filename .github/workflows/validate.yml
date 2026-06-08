@@ -1,0 +1,34 @@
+name: ProTrader EA static validation
+
+# MQL5 can only be compiled inside MetaEditor (Windows). This workflow runs
+# the strongest checks possible without a compiler: bracket balance, input
+# parity between builds, include/type ordering, hardening + PID features,
+# .set cross-references, and a full behavioural simulation of all 5 PIDs
+# and FTMO/MAX mode gating.
+
+on:
+  push:
+    paths:
+      - 'MT5_EA/**'
+      - '.github/workflows/validate.yml'
+  pull_request:
+    paths:
+      - 'MT5_EA/**'
+      - '.github/workflows/validate.yml'
+  workflow_dispatch: {}
+
+jobs:
+  static-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run static validation suite (110 checks)
+        working-directory: MT5_EA
+        run: python3 validate.py
