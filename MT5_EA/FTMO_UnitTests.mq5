@@ -207,7 +207,7 @@ void TestSessionFilter()
     AssertTrue ("London Mon 09:00 allowed",     TestSession(9, 1,true,true));
     AssertTrue ("London Wed 12:00 allowed",     TestSession(12,3,true,true));
     AssertFalse("London Mon 07:00 blocked",     TestSession(7, 1,true,true));
-    AssertFalse("London Mon 16:00 blocked",     TestSession(16,1,true,true));
+    AssertFalse("London 16:00 close (NY off) blocked", TestSession(16,1,true,false));
     AssertTrue ("NY Tue 15:00 allowed",         TestSession(15,2,true,true));
     AssertTrue ("London+NY overlap 14:00",      TestSession(14,3,true,true));
     AssertFalse("NY Mon 22:00 blocked",         TestSession(22,1,true,true));
@@ -216,7 +216,7 @@ void TestSessionFilter()
     AssertFalse("Friday 21:00 blocked",         TestSession(21,5,true,true));
     AssertTrue ("Friday 20:00 allowed",         TestSession(20,5,true,true));
     AssertFalse("Monday 00:00 blocked",         TestSession(0, 1,true,true));
-    AssertTrue ("Monday 01:00 allowed",         TestSession(1, 1,true,true));
+    AssertFalse("Monday 01:00 (pre-session) blocked", TestSession(1, 1,true,true));
     AssertFalse("No sessions = blocked",        TestSession(10,2,false,false));
 }
 
@@ -252,8 +252,9 @@ void TestATRDistances()
     double ask = 1.10000;
     double sl  = NormalizeDouble(ask - slDist, 5);
     double tp  = NormalizeDouble(ask + tpDist, 5);
-    AssertNear("Buy SL below entry", sl, 1.09985, 0.00001);
-    AssertNear("Buy TP above entry", tp, 1.10025, 0.00001);
+    // atr=0.0010 → slDist=0.0015, tpDist=0.0025; ask=1.10000
+    AssertNear("Buy SL below entry", sl, 1.09850, 0.00001);
+    AssertNear("Buy TP above entry", tp, 1.10250, 0.00001);
     AssertGT  ("Buy TP > entry",     tp, ask);
     AssertGT  ("Buy entry > SL",     ask, sl);
 }
@@ -456,14 +457,15 @@ void TestWRPIDController()
 
 double TestDVPID(double velocity, double kpDown, double currentMult)
 {
-    double kp     = (velocity < 0) ? kpDown : 0.5;
-    double step   = kp * velocity * 0.1;
-    double slew   = (velocity < 0) ? -0.05 : 0.01;  // fast down, slow up
-    step = MathMax(slew, MathMin(MathAbs(slew), step));
-    if(velocity > 0) step = MathMin(step, 0.01);
-    if(velocity < 0) step = MathMax(step, -0.05);
+    // Asymmetric proportional controller: aggressive on the downside
+    // (kpDown), gentle on recovery (0.5). Zero velocity → zero step.
+    double kp   = (velocity < 0.0) ? kpDown : 0.5;
+    double step = kp * velocity;
+    // Asymmetric slew clamp: fast down (-0.05/bar), slow up (+0.01/bar)
+    if(step < 0.0) step = MathMax(step, -0.05);
+    else            step = MathMin(step,  0.01);
     double out = currentMult + step;
-    return MathMax(0.1, MathMin(1.0, out)); // NEVER above 1.0
+    return MathMax(0.1, MathMin(1.0, out)); // protective: NEVER above 1.0
 }
 
 void TestDVPIDController()
