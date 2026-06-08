@@ -44,8 +44,7 @@
 //|  — SPID —                                                        |
 //|    bool   InpSPIDEnabled                                         |
 //|    int    InpSPIDWindow      (spread rolling window, ≤200)      |
-//|    double InpSPIDKp                                              |
-//|    double InpSPIDKi                                              |
+//|    double InpSPIDKp           (P-only controller)              |
 //|    int    InpMaxSpreadPoints (base spread gate)                  |
 //+------------------------------------------------------------------+
 #ifndef PROTRADER_PIDS_MQH
@@ -596,22 +595,14 @@ double SPID_Update(double currentSpread)
     double measurement = PID_SafeDiv(currentSpread, avgSpread, 1.0);
     double error       = 1.0 - measurement;  // positive when spread calm
 
-    // Anti-windup snapshot
-    double prevIntegral = s_spid_integral;
-    s_spid_integral    += error;
-
-    // PI output
-    double pidOut = InpSPIDKp * error + InpSPIDKi * s_spid_integral;
+    // Proportional output (P-only: spread ratio is already self-normalising,
+    // so an integral term would only add windup with no steady-state benefit)
+    double pidOut = InpSPIDKp * error;
 
     // Apply slew: limit change in multiplier to 0.05 per sample
     double delta     = PID_Clamp(pidOut - (s_spid_mult - 1.0), -0.05, 0.05);
     double candidate = s_spid_mult + delta;
-    double clamped   = PID_Clamp(candidate, 0.5, 2.0);
-
-    // Anti-windup
-    if(clamped != candidate) s_spid_integral = prevIntegral;
-
-    s_spid_mult = clamped;
+    s_spid_mult      = PID_Clamp(candidate, 0.5, 2.0);
     return s_spid_mult;
 }
 

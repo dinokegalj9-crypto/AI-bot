@@ -553,54 +553,37 @@ void UpdateRiskManagement()
 //===================================================================
 //+------------------------------------------------------------------+
 
+//--- Copy 2 confirmed bars (shift 1 + 2) into a fixed 2-slot struct member in
+//    series order: dest[0] = shift 1 (newest confirmed), dest[1] = shift 2.
+//    A dynamic temp is used because ArraySetAsSeries can't apply to the fixed
+//    struct arrays directly.
+bool CopyConfirmed2(int handle, int buffer, double &dest[])
+{
+    double tmp[];
+    ArraySetAsSeries(tmp, true);
+    if(CopyBuffer(handle, buffer, 1, 2, tmp) < 2) return false;
+    dest[0] = tmp[0];
+    dest[1] = tmp[1];
+    return true;
+}
+
 bool LoadIndicators(IndicatorValues &iv)
 {
-    //--- Copy 2 bars from each handle (index 1 = last closed bar, 0 = current forming)
-    //    We treat [1] as "confirmed" and [0] as a cross-check.
+    // Main TF
+    if(!CopyConfirmed2(h_fastEMA,  0, iv.fastEMA))    return false;
+    if(!CopyConfirmed2(h_slowEMA,  0, iv.slowEMA))    return false;
+    if(!CopyConfirmed2(h_trendEMA, 0, iv.trendEMA))   return false;
+    if(!CopyConfirmed2(h_rsi,      0, iv.rsi))        return false;
+    if(!CopyConfirmed2(h_atr,      0, iv.atr))        return false;
+    if(!CopyConfirmed2(h_macd,     0, iv.macdMain))   return false;
+    if(!CopyConfirmed2(h_macd,     1, iv.macdSignal)) return false;
 
-    // FastEMA (main TF)
-    if(CopyBuffer(h_fastEMA, 0, 1, 2, iv.fastEMA) < 2)   return false;
-    ArraySetAsSeries(iv.fastEMA, true);
-
-    // SlowEMA (main TF)
-    if(CopyBuffer(h_slowEMA, 0, 1, 2, iv.slowEMA) < 2)   return false;
-    ArraySetAsSeries(iv.slowEMA, true);
-
-    // TrendEMA (main TF)
-    if(CopyBuffer(h_trendEMA, 0, 1, 2, iv.trendEMA) < 2) return false;
-    ArraySetAsSeries(iv.trendEMA, true);
-
-    // RSI (main TF)
-    if(CopyBuffer(h_rsi, 0, 1, 2, iv.rsi) < 2)           return false;
-    ArraySetAsSeries(iv.rsi, true);
-
-    // ATR (main TF)
-    if(CopyBuffer(h_atr, 0, 1, 2, iv.atr) < 2)           return false;
-    ArraySetAsSeries(iv.atr, true);
-
-    // MACD main line (buffer 0) and signal line (buffer 1) — main TF
-    if(CopyBuffer(h_macd, 0, 1, 2, iv.macdMain) < 2)     return false;
-    ArraySetAsSeries(iv.macdMain, true);
-    if(CopyBuffer(h_macd, 1, 1, 2, iv.macdSignal) < 2)   return false;
-    ArraySetAsSeries(iv.macdSignal, true);
-
-    // FastEMA (trend TF)
-    if(CopyBuffer(h_fastEMA_TF, 0, 1, 2, iv.fastEMA_TF) < 2)   return false;
-    ArraySetAsSeries(iv.fastEMA_TF, true);
-
-    // SlowEMA (trend TF)
-    if(CopyBuffer(h_slowEMA_TF, 0, 1, 2, iv.slowEMA_TF) < 2)   return false;
-    ArraySetAsSeries(iv.slowEMA_TF, true);
-
-    // TrendEMA (trend TF)
-    if(CopyBuffer(h_trendEMA_TF, 0, 1, 2, iv.trendEMA_TF) < 2) return false;
-    ArraySetAsSeries(iv.trendEMA_TF, true);
-
-    // MACD (trend TF)
-    if(CopyBuffer(h_macd_TF, 0, 1, 2, iv.macdMain_TF) < 2)   return false;
-    ArraySetAsSeries(iv.macdMain_TF, true);
-    if(CopyBuffer(h_macd_TF, 1, 1, 2, iv.macdSignal_TF) < 2) return false;
-    ArraySetAsSeries(iv.macdSignal_TF, true);
+    // Trend TF
+    if(!CopyConfirmed2(h_fastEMA_TF,  0, iv.fastEMA_TF))    return false;
+    if(!CopyConfirmed2(h_slowEMA_TF,  0, iv.slowEMA_TF))    return false;
+    if(!CopyConfirmed2(h_trendEMA_TF, 0, iv.trendEMA_TF))   return false;
+    if(!CopyConfirmed2(h_macd_TF,     0, iv.macdMain_TF))   return false;
+    if(!CopyConfirmed2(h_macd_TF,     1, iv.macdSignal_TF)) return false;
 
     //--- NaN / infinity guards on the values we will actually trade on
     if(!MathIsValidNumber(iv.fastEMA[0])  || !MathIsValidNumber(iv.slowEMA[0])   ||
@@ -758,7 +741,7 @@ bool IsSpreadOK()
 //--------------------------------------------------------------------
 // ExecuteBuy
 //--------------------------------------------------------------------
-void ExecuteBuy(const double atr[])
+void ExecuteBuy(const double &atr[])
 {
     if(!IsSpreadOK())
     {
@@ -811,7 +794,7 @@ void ExecuteBuy(const double atr[])
 //--------------------------------------------------------------------
 // ExecuteSell
 //--------------------------------------------------------------------
-void ExecuteSell(const double atr[])
+void ExecuteSell(const double &atr[])
 {
     if(!IsSpreadOK())
     {
@@ -868,10 +851,10 @@ void ExecuteSell(const double atr[])
 
 void ManageOpenTrades()
 {
-    //--- Fetch current ATR for position management
-    double atrBuf[2];
-    if(CopyBuffer(h_atr, 0, 1, 2, atrBuf) < 2) return;
+    //--- Fetch current ATR for position management (dynamic array → series-safe)
+    double atrBuf[];
     ArraySetAsSeries(atrBuf, true);
+    if(CopyBuffer(h_atr, 0, 1, 2, atrBuf) < 2) return;
 
     double atrNow = atrBuf[0];
     if(atrNow <= 0.0 || !MathIsValidNumber(atrNow)) return;
@@ -1009,29 +992,23 @@ bool IsInTradingSession()
 //===================================================================
 //+------------------------------------------------------------------+
 
-bool IsNewsTime()
+//--- Scan the calendar for one currency; returns true if a filtered event
+//    falls inside the [before, after] window around now.
+bool NewsHitForCurrency(const string ccy, datetime now,
+                        datetime lookBack, datetime lookAhead)
 {
-    if(!InpUseNewsFilter) return false;
-
-    datetime now = TimeCurrent();
-
-    //--- Use the built-in MQL5 economic calendar
     MqlCalendarValue values[];
-    datetime lookBack  = now - (datetime)(InpNewsMinBefore + 60) * 60;
-    datetime lookAhead = now + (datetime)(InpNewsMinAfter  + 60) * 60;
-
-    int count = CalendarValueHistory(values, lookBack, lookAhead, NULL, NULL);
+    // CalendarValueHistory filters by currency directly — no per-event
+    // country/currency lookup needed (MqlCalendarEvent has no currency field).
+    int count = CalendarValueHistory(values, lookBack, lookAhead, NULL, ccy);
     if(count <= 0) return false;
 
-    // Bound the loop to avoid runaway on corrupted data
-    int limit = (count < 500) ? count : 500;
-
+    int limit = (count < 500) ? count : 500;  // bound runaway on corrupt data
     for(int i = 0; i < limit; i++)
     {
         MqlCalendarEvent ev;
         if(!CalendarEventById(values[i].event_id, ev)) continue;
 
-        // Impact filter
         bool relevant = false;
         if(InpFilterHighImpact && ev.importance == CALENDAR_IMPORTANCE_HIGH)
             relevant = true;
@@ -1039,24 +1016,27 @@ bool IsNewsTime()
             relevant = true;
         if(!relevant) continue;
 
-        // Currency filter — match symbol's base or quote currency
-        string baseCcy  = SymbolInfoString(_Symbol, SYMBOL_CURRENCY_BASE);
-        string quoteCcy = SymbolInfoString(_Symbol, SYMBOL_CURRENCY_PROFIT);
-
-        if(ev.currency != baseCcy && ev.currency != quoteCcy) continue;
-
-        datetime evTime = values[i].time;
-        long     diff   = (long)(now - evTime);  // seconds; negative = future event
-
-        // Block InpNewsMinBefore minutes before
-        if(diff < 0 && MathAbs(diff) <= (long)InpNewsMinBefore * 60)
-            return true;
-
-        // Block InpNewsMinAfter minutes after
-        if(diff >= 0 && diff <= (long)InpNewsMinAfter * 60)
-            return true;
+        long diff = (long)(now - values[i].time);  // seconds; <0 = future event
+        if(diff < 0  && MathAbs(diff) <= (long)InpNewsMinBefore * 60) return true;
+        if(diff >= 0 && diff          <= (long)InpNewsMinAfter  * 60) return true;
     }
+    return false;
+}
 
+bool IsNewsTime()
+{
+    if(!InpUseNewsFilter) return false;
+
+    datetime now       = TimeCurrent();
+    datetime lookBack  = now - (datetime)(InpNewsMinBefore + 60) * 60;
+    datetime lookAhead = now + (datetime)(InpNewsMinAfter  + 60) * 60;
+
+    // Block on events for either leg of the pair (e.g. EUR or USD on EURUSD)
+    string baseCcy  = SymbolInfoString(_Symbol, SYMBOL_CURRENCY_BASE);
+    string quoteCcy = SymbolInfoString(_Symbol, SYMBOL_CURRENCY_PROFIT);
+
+    if(NewsHitForCurrency(baseCcy,  now, lookBack, lookAhead)) return true;
+    if(NewsHitForCurrency(quoteCcy, now, lookBack, lookAhead)) return true;
     return false;
 }
 
