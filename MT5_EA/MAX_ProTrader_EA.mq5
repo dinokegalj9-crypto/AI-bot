@@ -133,6 +133,7 @@ input bool   InpShowDashboard      = true;    // Show on-chart dashboard
 input uint   InpDashIntervalMs     = 250;     // Dashboard refresh interval (ms)
 input color  InpDashBG             = clrMidnightBlue;  // Dashboard background color
 input color  InpDashText           = clrWhite;          // Dashboard text color
+input bool   InpLogTrades          = true;    // Log closed trades to CSV (Files folder)
 
 //+------------------------------------------------------------------+
 //| Core Logic — all event handlers defined in ProTrader_Core.mqh   |

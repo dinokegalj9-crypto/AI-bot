@@ -881,6 +881,91 @@ def check_config_files(base: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Category 15 — Optimization presets (genetic-optimizer .set files)
+# ---------------------------------------------------------------------------
+
+def check_optimization_presets(base: Path) -> None:
+    """Validate the genetic-optimizer .set files use the MT5
+    value||start||step||stop||Y/N format, lock FTMO safety inputs, and open
+    the search space on at least the core strategy + PID gains."""
+    specs = [
+        ("FTMO_Optimize.set", "FTMO_ProTrader_EA",
+         # inputs that MUST be locked (N) so the optimizer can't break FTMO rules
+         ["InpMaxDailyLoss", "InpMaxTotalLoss", "InpProfitTarget",
+          "InpFTMOMode", "InpEnforceDailyLimit", "InpPIDMaxRisk"]),
+        ("MAX_Optimize.set", "MAX_ProTrader_EA",
+         # MAX keeps the kill-switch locked; risk ceilings may be optimized
+         ["InpEnforceTotalLimit", "InpFTMOMode"]),
+    ]
+    # inputs that SHOULD be opened for optimization (Y) in both presets
+    must_optimize = ["InpFastEMA", "InpSlowEMA", "InpATRSLMulti",
+                     "InpATRTPMulti", "InpEPIDKp", "InpVPIDKp"]
+
+    for fname, expert, locked in specs:
+        text = read_text(base / fname)
+        if text is None:
+            check(False, "Optimization", f"{fname} exists", "file not found")
+            continue
+        check(True, "Optimization", f"{fname} exists")
+
+        check(bool(re.search(rf'Expert\s*=\s*{re.escape(expert)}', text)),
+              "Optimization", f"{fname}: Expert={expert}")
+
+        check("Optimization=2" in text, "Optimization",
+              f"{fname}: genetic optimization enabled (Optimization=2)")
+
+        # Parse "Name=value||start||step||stop||flag" lines
+        flags = {}
+        for m in re.finditer(r'^(Inp\w+)\s*=\s*[^|]+\|\|[^|]*\|\|[^|]*\|\|[^|]*\|\|([YN])',
+                             text, re.MULTILINE):
+            flags[m.group(1)] = m.group(2).upper()
+
+        check(len(flags) >= 30, "Optimization",
+              f"{fname}: uses value||start||step||stop||Y/N format ({len(flags)} inputs)")
+
+        for inp in locked:
+            check(flags.get(inp) == "N", "Optimization",
+                  f"{fname}: {inp} LOCKED (N) — optimizer cannot violate it",
+                  f"flag={flags.get(inp)}")
+
+        for inp in must_optimize:
+            check(flags.get(inp) == "Y", "Optimization",
+                  f"{fname}: {inp} opened for optimization (Y)",
+                  f"flag={flags.get(inp)}")
+
+
+# ---------------------------------------------------------------------------
+# Category 16 — Trade-logger feature (closed-trade CSV → Monte Carlo)
+# ---------------------------------------------------------------------------
+
+def check_trade_logger(base: Path) -> None:
+    core = read_text(base / "ProTrader_Core.mqh")
+    if core is None:
+        check(False, "Trade Logger", "ProTrader_Core.mqh exists", "file not found")
+        return
+    for needle, desc in [
+        ("TradeLog_Init",   "Core defines TradeLog_Init (CSV header)"),
+        ("TradeLog_Append", "Core defines TradeLog_Append (per-trade row)"),
+        ("FileWrite",       "Core writes CSV rows via FileWrite"),
+        ("InpLogTrades",    "Core gates logging behind InpLogTrades"),
+    ]:
+        check(needle in core, "Trade Logger", desc)
+
+    pids = read_text(base / "ProTrader_PIDs.mqh")
+    if pids is not None:
+        check("PID_LastEffectiveRisk" in pids, "Trade Logger",
+              "PIDs expose PID_LastEffectiveRisk for logging")
+
+    # InpLogTrades must exist in BOTH wrappers (parity already enforced, but
+    # assert the specific feature input is present)
+    for fname, label in (("FTMO_ProTrader_EA.mq5", "FTMO"),
+                          ("MAX_ProTrader_EA.mq5",  "MAX")):
+        text = read_text(base / fname)
+        check(text is not None and "InpLogTrades" in text, "Trade Logger",
+              f"{label} wrapper declares InpLogTrades")
+
+
+# ---------------------------------------------------------------------------
 # Category 14 — Version consistency
 # ---------------------------------------------------------------------------
 
@@ -927,6 +1012,8 @@ def main() -> int:
     check_bracket_balance(base)
     check_pid_simulation(base)
     check_config_files(base)
+    check_optimization_presets(base)
+    check_trade_logger(base)
     check_version_consistency(base)
 
     total   = len(_results)

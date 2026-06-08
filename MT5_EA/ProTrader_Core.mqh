@@ -138,6 +138,88 @@ string g_gv;         // e.g. "PT_202401_EURUSD_"
 string DashPrefix;   // e.g. "PTD_202401_"
 
 //+------------------------------------------------------------------+
+//| Closed-trade CSV log file name (magic + symbol keyed)            |
+//| Feeds the Monte Carlo validator (FTMO_Optimizer.mq5).           |
+//+------------------------------------------------------------------+
+string g_tradeLog;   // e.g. "PT_202401_EURUSD_trades.csv"
+int    g_logTradeNo; // running closed-trade counter for the CSV row index
+
+//+------------------------------------------------------------------+
+//| TradeLog_Init — (re)create the CSV with a header row.            |
+//| Called once in OnInit when InpLogTrades is enabled. Appends if   |
+//| the file already exists so a mid-challenge restart keeps history.|
+//+------------------------------------------------------------------+
+void TradeLog_Init()
+{
+    if(!InpLogTrades) return;
+
+    g_tradeLog  = StringFormat("PT_%d_%s_trades.csv", InpMagicNumber, _Symbol);
+    g_logTradeNo = 0;
+
+    //--- If the file already exists, count its data rows so the index
+    //    continues seamlessly; otherwise write a fresh header.
+    if(FileIsExist(g_tradeLog))
+    {
+        int rh = FileOpen(g_tradeLog, FILE_READ | FILE_CSV | FILE_ANSI, ',');
+        if(rh != INVALID_HANDLE)
+        {
+            while(!FileIsEnding(rh))
+            {
+                string line = FileReadString(rh);
+                if(StringLen(line) > 0 && StringFind(line, "trade_no") < 0)
+                    g_logTradeNo++;
+                // advance to end of row
+                while(!FileIsLineEnding(rh) && !FileIsEnding(rh)) FileReadString(rh);
+            }
+            FileClose(rh);
+        }
+        return;  // keep existing history, append-only from here
+    }
+
+    int wh = FileOpen(g_tradeLog, FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
+    if(wh == INVALID_HANDLE)
+    {
+        Print("ProTrader v5.00: WARNING — could not create trade log ", g_tradeLog,
+              " err=", GetLastError());
+        return;
+    }
+    FileWrite(wh, "trade_no", "close_time", "symbol", "profit",
+                  "balance", "equity", "win", "effective_risk");
+    FileClose(wh);
+    Print("ProTrader v5.00: trade log → MQL5\\Files\\", g_tradeLog);
+}
+
+//+------------------------------------------------------------------+
+//| TradeLog_Append — append one closed-trade row. Open in READ_WRITE|
+//| and seek to the end so existing rows are preserved.              |
+//+------------------------------------------------------------------+
+void TradeLog_Append(double profit, double balance, double equity,
+                     bool isWin, double effRisk)
+{
+    if(!InpLogTrades) return;
+    if(StringLen(g_tradeLog) == 0) return;
+
+    int h = FileOpen(g_tradeLog, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
+    if(h == INVALID_HANDLE)
+    {
+        Print("ProTrader v5.00: WARNING — trade log append failed err=", GetLastError());
+        return;
+    }
+    FileSeek(h, 0, SEEK_END);
+    g_logTradeNo++;
+    FileWrite(h,
+              g_logTradeNo,
+              TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS),
+              _Symbol,
+              DoubleToString(profit,  2),
+              DoubleToString(balance, 2),
+              DoubleToString(equity,  2),
+              isWin ? 1 : 0,
+              DoubleToString(effRisk, 4));
+    FileClose(h);
+}
+
+//+------------------------------------------------------------------+
 //===================================================================
 // SECTION 1 — INPUT VALIDATION
 //===================================================================
@@ -1223,6 +1305,9 @@ int OnInit()
     g_totalLimitHit   = (GlobalVariableGet(g_gv + "TotalHalt") > 0.5);
     g_profitTargetHit = (GlobalVariableGet(g_gv + "ProfitHit")  > 0.5);
 
+    //--- Closed-trade CSV logger (optional; feeds the Monte Carlo validator)
+    TradeLog_Init();
+
     double savedDayBal  = GlobalVariableGet(g_gv + "DayBal");
     double savedDayTime = GlobalVariableGet(g_gv + "DayTime");
 
@@ -1484,6 +1569,13 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 
     //--- Notify PID system
     PID_NotifyTrade(isWin);
+
+    //--- Append to the closed-trade CSV (no-op when InpLogTrades is false)
+    TradeLog_Append(profit,
+                    AccountInfoDouble(ACCOUNT_BALANCE),
+                    AccountInfoDouble(ACCOUNT_EQUITY),
+                    isWin,
+                    PID_LastEffectiveRisk());
 
     Print(StringFormat("ProTrader v5.00 | Trade closed: ticket=#%I64u profit=%.2f %s  W=%d L=%d",
                        dealTicket, profit, isWin ? "WIN" : "LOSS",

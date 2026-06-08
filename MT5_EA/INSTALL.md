@@ -2,11 +2,68 @@
 
 ## Files
 
-| File | Description |
-|------|-------------|
-| `FTMO_ProTrader_EA.mq5` | Main Expert Advisor (copy to MT5 Experts folder) |
-| `FTMO_Optimizer.mq5` | Monte Carlo stress-test script (copy to MT5 Scripts folder) |
-| `FTMO_BacktestConfig.set` | Strategy Tester settings preset |
+| File | Where it goes | Description |
+|------|---------------|-------------|
+| `FTMO_ProTrader_EA.mq5` | `MQL5/Experts/` | FTMO-compliant EA (thin wrapper) |
+| `MAX_ProTrader_EA.mq5` | `MQL5/Experts/` | Uncapped/aggressive EA (thin wrapper) |
+| `ProTrader_Core.mqh` | `MQL5/Experts/` | **Required** shared engine (both EAs include it) |
+| `ProTrader_PIDs.mqh` | `MQL5/Experts/` | **Required** 5-PID adaptive-risk library |
+| `FTMO_UnitTests.mq5` | `MQL5/Scripts/` | 18-module self-test harness |
+| `FTMO_Optimizer.mq5` | `MQL5/Scripts/` | Monte Carlo stress-test script |
+| `FTMO_BacktestConfig.set` | Strategy Tester → Load | FTMO single-run preset |
+| `MAX_BacktestConfig.set` | Strategy Tester → Load | MAX single-run preset |
+| `FTMO_Optimize.set` | Strategy Tester → Load | FTMO **genetic-optimizer** preset |
+| `MAX_Optimize.set` | Strategy Tester → Load | MAX **genetic-optimizer** preset |
+
+> Copy **all four** `.mq5`/`.mqh` engine files into `MQL5/Experts/` together —
+> the two `.mqh` headers are not optional; the EAs won't compile without them.
+
+---
+
+## Adaptive Risk — 5 PID Controllers
+
+Risk per trade is no longer a fixed number; five independent PID control loops
+adapt it live (the FTMO hard limits always override them):
+
+| PID | Reads | Effect |
+|-----|-------|--------|
+| **EPID** | equity vs daily target | sets the base risk % (anti-martingale: cuts on drawdown) |
+| **VPID** | ATR vs its moving average | ×0.3–1.5 — trims size in volatile regimes |
+| **WRPID** | rolling win rate | ×0.3–1.5 — eases off during losing streaks |
+| **DVPID** | equity velocity | ×0.1–1.0 — fast protective cut when equity drops sharply |
+| **SPID** | spread vs its average | tightens the entry spread gate when spreads widen |
+
+Final risk = `EPID × VPID × WRPID × DVPID`, clamped to `[InpPIDMinRisk, InpPIDMaxRisk]`.
+Set `InpPIDEnabled=false` for fixed-risk (`InpRiskPerTrade`) behaviour.
+
+---
+
+## Optimization & Walk-Forward (closest thing to "training")
+
+MQL5 EAs are rule-based, not ML-trained — but MT5's genetic optimizer fits the
+parameters to your full history:
+
+1. **In-sample optimize** — Strategy Tester → `Optimization = Fast genetic`,
+   Inputs tab → **Load** `FTMO_Optimize.set` (or `MAX_Optimize.set`) → Start.
+   FTMO safety inputs are locked, so no pass can ever break the rules.
+2. **Pick the best pass** — sort the results by your criterion (the presets use
+   *Complex Criterion*; Sharpe or recovery factor are good alternatives).
+3. **Out-of-sample forward test** — re-run that single pass on a later, untouched
+   date range. The presets optimize on `2023.01.01–2024.06.30`; forward-test on
+   `2024.07.01–2024.12.31`. Keep it only if it survives unseen data.
+4. **Backtest the full available history** — set `FromDate` to the earliest data
+   your broker provides for the final sanity run.
+
+---
+
+## Closed-Trade CSV Logging → Monte Carlo
+
+Set `InpLogTrades=true` and every closed trade is appended to
+`MQL5/Files/PT_<magic>_<symbol>_trades.csv` (trade no, time, P&L, balance,
+equity, win flag, effective risk). To stress-test the result:
+
+1. Copy the `profit` column into `MQL5/Files/FTMO_trades.csv` (one P&L per line).
+2. Run the `FTMO_Optimizer` script → Journal shows the FTMO pass-rate estimate.
 
 ---
 

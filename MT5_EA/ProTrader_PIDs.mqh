@@ -664,10 +664,15 @@ void PID_InitAll(double baseRisk, string gvPrefix)
 //         SPID_Update() is called here to keep its state fresh even
 //         when the EA is not opening new positions.
 //--------------------------------------------------------------------
+static double s_pid_lastEff = 0.0;   // last composite effective risk (for logging)
+
 double PID_GetEffectiveRisk(double equity, double initialBalance, double currentATR)
 {
     if(!InpPIDEnabled)
+    {
+        s_pid_lastEff = InpRiskPerTrade;
         return InpRiskPerTrade;
+    }
 
     double epid  = EPID_Update(equity, initialBalance);
     double vpid  = VPID_Update(currentATR);
@@ -675,7 +680,17 @@ double PID_GetEffectiveRisk(double equity, double initialBalance, double current
     double dvpid = DVPID_Update(equity, initialBalance);
 
     double composite = epid * vpid * wrpid * dvpid;
-    return PID_Clamp(composite, InpPIDMinRisk, InpPIDMaxRisk);
+    s_pid_lastEff = PID_Clamp(composite, InpPIDMinRisk, InpPIDMaxRisk);
+    return s_pid_lastEff;
+}
+
+//--------------------------------------------------------------------
+// PID_LastEffectiveRisk — last composite risk % computed by
+// PID_GetEffectiveRisk (cached; no recompute). Used for trade logging.
+//--------------------------------------------------------------------
+double PID_LastEffectiveRisk()
+{
+    return (s_pid_lastEff > 0.0) ? s_pid_lastEff : InpRiskPerTrade;
 }
 
 //--------------------------------------------------------------------
