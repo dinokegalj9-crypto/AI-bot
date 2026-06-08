@@ -556,16 +556,14 @@ static double s_spid_spreadBuf[SPID_SPREAD_BUF_MAX];
 static int    s_spid_head      = 0;   // next write slot
 static int    s_spid_count     = 0;   // valid entries (0..SPID_SPREAD_BUF_MAX)
 
-static double s_spid_integral  = 0.0;
 static double s_spid_mult      = 1.0;  // current spread threshold multiplier
 
 void SPID_Init()
 {
     for(int i = 0; i < SPID_SPREAD_BUF_MAX; i++) s_spid_spreadBuf[i] = 0.0;
-    s_spid_head     = 0;
-    s_spid_count    = 0;
-    s_spid_integral = 0.0;
-    s_spid_mult     = 1.0;
+    s_spid_head  = 0;
+    s_spid_count = 0;
+    s_spid_mult  = 1.0;
 }
 
 //--------------------------------------------------------------------
@@ -616,8 +614,8 @@ int SPID_MaxSpread()
 
 void SPID_DailyReset()
 {
-    s_spid_integral = 0.0;
-    // Retain spread history for MA continuity
+    // P-only controller — no integral state to clear.
+    // Spread history is intentionally retained for MA continuity.
 }
 
 string SPID_StatusLine()

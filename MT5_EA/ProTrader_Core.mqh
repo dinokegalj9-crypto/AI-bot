@@ -1519,6 +1519,10 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest     &request,
                         const MqlTradeResult      &result)
 {
+    //--- request/result are unused here — touch them to silence the
+    //    "unreferenced formal parameter" warnings without changing behaviour.
+    (void)request; (void)result;
+
     //--- We are interested only in deal-add transactions (closed positions)
     if(trans.type != TRADE_TRANSACTION_DEAL_ADD) return;
 
@@ -1530,7 +1534,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 
     //--- Verify it belongs to this EA and symbol
     if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol)       return;
-    if(HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != InpMagicNumber) return;
+    if(HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != (long)InpMagicNumber) return;
 
     //--- Only process exit deals (not entry fills)
     ENUM_DEAL_ENTRY entryType = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
