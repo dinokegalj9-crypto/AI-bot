@@ -49,6 +49,9 @@ input int    InpATRPeriod          = 14;      // ATR period
 input double InpATRSLMulti         = 1.5;     // ATR stop loss multiplier
 input double InpATRTPMulti         = 2.5;     // ATR take profit multiplier
 input int    InpMinSignals         = 4;       // Min confluence signals to trade (3-5)
+input int    InpADXPeriod          = 14;      // ADX period (trend strength)
+input double InpADXMin             = 20.0;    // Min ADX to confirm trending regime
+input double InpPullbackRSI        = 50.0;    // RSI level defining a pullback dip
 
 //+------------------------------------------------------------------+
 //| ════════ TRADE MANAGEMENT ════════                               |

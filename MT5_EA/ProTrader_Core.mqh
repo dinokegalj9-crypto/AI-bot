@@ -33,14 +33,21 @@ enum ENUM_SIGNAL
 //+------------------------------------------------------------------+
 struct IndicatorValues
 {
-    // Main-TF values (index 0 = current closed bar, 1 = prior)
+    // Main-TF values (index 0 = last closed bar, 1 = prior; rsi adds 2 = older)
     double fastEMA[2];
     double slowEMA[2];
     double trendEMA[2];
-    double rsi[2];
+    double rsi[3];
     double atr[2];
+    double adx[2];
     double macdMain[2];
     double macdSignal[2];
+
+    // Price action — last 3 confirmed bars on the main TF (series order)
+    double barOpen[3];
+    double barHigh[3];
+    double barLow[3];
+    double barClose[3];
 
     // Trend-TF values (same indexing)
     double fastEMA_TF[2];
@@ -117,6 +124,7 @@ int h_slowEMA;
 int h_trendEMA;
 int h_rsi;
 int h_atr;
+int h_adx;
 int h_macd;
 
 //+------------------------------------------------------------------+
@@ -350,6 +358,23 @@ bool ValidateInputs()
         Print("ValidateInputs: InpMinSignals must be 1-5 (got ", InpMinSignals, ")");
         ok = false;
     }
+    if(InpADXPeriod < 1)
+    {
+        Print("ValidateInputs: InpADXPeriod must be >= 1 (got ", InpADXPeriod, ")");
+        ok = false;
+    }
+    if(InpADXMin < 0.0 || InpADXMin >= 100.0)
+    {
+        Print("ValidateInputs: InpADXMin must be in [0, 100) (got ",
+              DoubleToString(InpADXMin, 2), ")");
+        ok = false;
+    }
+    if(InpPullbackRSI <= 0.0 || InpPullbackRSI >= 100.0)
+    {
+        Print("ValidateInputs: InpPullbackRSI must be in (0, 100) (got ",
+              DoubleToString(InpPullbackRSI, 2), ")");
+        ok = false;
+    }
 
     //--- PID bounds
     if(InpPIDEnabled)
@@ -572,16 +597,41 @@ bool CopyConfirmed2(int handle, int buffer, double &dest[])
     return true;
 }
 
+//--- Same as CopyConfirmed2 but for 3 confirmed bars (shift 1 + 2 + 3).
+bool CopyConfirmed3(int handle, int buffer, double &dest[])
+{
+    double tmp[];
+    ArraySetAsSeries(tmp, true);
+    if(CopyBuffer(handle, buffer, 1, 3, tmp) < 3) return false;
+    dest[0] = tmp[0];
+    dest[1] = tmp[1];
+    dest[2] = tmp[2];
+    return true;
+}
+
 bool LoadIndicators(IndicatorValues &iv)
 {
     // Main TF
     if(!CopyConfirmed2(h_fastEMA,  0, iv.fastEMA))    return false;
     if(!CopyConfirmed2(h_slowEMA,  0, iv.slowEMA))    return false;
     if(!CopyConfirmed2(h_trendEMA, 0, iv.trendEMA))   return false;
-    if(!CopyConfirmed2(h_rsi,      0, iv.rsi))        return false;
+    if(!CopyConfirmed3(h_rsi,      0, iv.rsi))        return false;
     if(!CopyConfirmed2(h_atr,      0, iv.atr))        return false;
+    if(!CopyConfirmed2(h_adx,      0, iv.adx))        return false;
     if(!CopyConfirmed2(h_macd,     0, iv.macdMain))   return false;
     if(!CopyConfirmed2(h_macd,     1, iv.macdSignal)) return false;
+
+    // Price action — 3 confirmed bars in series order (index 0 = last closed)
+    MqlRates rates[];
+    ArraySetAsSeries(rates, true);
+    if(CopyRates(_Symbol, InpMainTF, 1, 3, rates) < 3) return false;
+    for(int i = 0; i < 3; i++)
+    {
+        iv.barOpen[i]  = rates[i].open;
+        iv.barHigh[i]  = rates[i].high;
+        iv.barLow[i]   = rates[i].low;
+        iv.barClose[i] = rates[i].close;
+    }
 
     // Trend TF
     if(!CopyConfirmed2(h_fastEMA_TF,  0, iv.fastEMA_TF))    return false;
@@ -593,7 +643,8 @@ bool LoadIndicators(IndicatorValues &iv)
     //--- NaN / infinity guards on the values we will actually trade on
     if(!MathIsValidNumber(iv.fastEMA[0])  || !MathIsValidNumber(iv.slowEMA[0])   ||
        !MathIsValidNumber(iv.trendEMA[0]) || !MathIsValidNumber(iv.rsi[0])        ||
-       !MathIsValidNumber(iv.atr[0])      || !MathIsValidNumber(iv.macdMain[0])   ||
+       !MathIsValidNumber(iv.atr[0])      || !MathIsValidNumber(iv.adx[0])        ||
+       !MathIsValidNumber(iv.barClose[0]) || !MathIsValidNumber(iv.macdMain[0])   ||
        !MathIsValidNumber(iv.fastEMA_TF[0]) || !MathIsValidNumber(iv.slowEMA_TF[0]) ||
        !MathIsValidNumber(iv.trendEMA_TF[0]))
         return false;
@@ -603,58 +654,71 @@ bool LoadIndicators(IndicatorValues &iv)
 
 //+------------------------------------------------------------------+
 //===================================================================
-// SECTION 5 — SIGNAL GENERATION (InpMinSignals-of-5 confluence)
+// SECTION 5 — SIGNAL GENERATION (trend-pullback-resume)
 //===================================================================
 //+------------------------------------------------------------------+
+// Strategy: trade only WITH a strictly aligned higher-timeframe trend,
+// in a trending regime (ADX), AFTER price has pulled back to the fast
+// EMA and momentum visibly resumes in the trend direction. This enters
+// on dips inside established trends instead of chasing lagging
+// crossovers, which is what made the previous engine unprofitable.
+//
+// Five scored conditions per side (>= InpMinSignals required), with the
+// resume trigger being mandatory regardless of score.
 
 ENUM_SIGNAL GetSignal(const IndicatorValues &iv)
 {
-    //--- Individual condition evaluation at bar index [0] (last closed bar,
-    //    copied with start=1 so [0] is the freshest completed candle).
+    //--- All values are confirmed-bar values: index [0] = last closed bar.
 
-    // 1. EMA short-term cross on main TF:
-    //    Buy  = fastEMA above slowEMA (and crossed from below on prior bar)
-    //    We check cross: fastEMA[0] > slowEMA[0] and fastEMA[1] <= slowEMA[1]
-    bool emaCrossUp   = (iv.fastEMA[0] > iv.slowEMA[0]) &&
-                        (iv.fastEMA[1] <= iv.slowEMA[1]);
-    bool emaCrossDown = (iv.fastEMA[0] < iv.slowEMA[0]) &&
-                        (iv.fastEMA[1] >= iv.slowEMA[1]);
+    // 1. HTF regime — strict EMA stack alignment on the Trend TF
+    //    (fast above slow above trend = healthy uptrend, mirror for down)
+    bool htfBull = (iv.fastEMA_TF[0] > iv.slowEMA_TF[0]) &&
+                   (iv.slowEMA_TF[0] > iv.trendEMA_TF[0]);
+    bool htfBear = (iv.fastEMA_TF[0] < iv.slowEMA_TF[0]) &&
+                   (iv.slowEMA_TF[0] < iv.trendEMA_TF[0]);
 
-    // 2. Price side of Trend EMA on main TF (trend filter layer 1):
-    //    Proxy via fastEMA above/below trendEMA[0]
-    bool aboveTrend   = (iv.fastEMA[0] > iv.trendEMA[0]);
-    bool belowTrend   = (iv.fastEMA[0] < iv.trendEMA[0]);
+    // 2. Main-TF trend agreement — close on the trend side of the trend EMA
+    //    with the fast/slow stack pointing the same way
+    bool trendBuy  = (iv.barClose[0] > iv.trendEMA[0]) &&
+                     (iv.fastEMA[0]  > iv.slowEMA[0]);
+    bool trendSell = (iv.barClose[0] < iv.trendEMA[0]) &&
+                     (iv.fastEMA[0]  < iv.slowEMA[0]);
 
-    // 3. MACD main line cross signal on main TF:
-    bool macdBull     = (iv.macdMain[0] > iv.macdSignal[0]) &&
-                        (iv.macdMain[1] <= iv.macdSignal[1]);
-    bool macdBear     = (iv.macdMain[0] < iv.macdSignal[0]) &&
-                        (iv.macdMain[1] >= iv.macdSignal[1]);
+    // 3. Trending regime — ADX above threshold (shared by both sides);
+    //    filters out the ranging chop where pullback entries get whipsawed
+    bool adxOK = (iv.adx[0] >= InpADXMin);
 
-    // 4. RSI in favourable zone (not counter-momentum):
-    bool rsiOK_buy    = (iv.rsi[0] < InpRSIOverbought);  // not overbought
-    bool rsiOK_sell   = (iv.rsi[0] > InpRSIOversold);    // not oversold
+    // 4. Pullback — price tagged the fast EMA within the last 3 closed bars
+    //    while RSI dipped into the pullback zone (the "discount" we buy)
+    double lo3 = MathMin(iv.barLow[0],  MathMin(iv.barLow[1],  iv.barLow[2]));
+    double hi3 = MathMax(iv.barHigh[0], MathMax(iv.barHigh[1], iv.barHigh[2]));
+    bool pullbackBuy  = (lo3 <= iv.fastEMA[0]) &&
+                        (MathMin(iv.rsi[1], iv.rsi[2]) < InpPullbackRSI);
+    bool pullbackSell = (hi3 >= iv.fastEMA[0]) &&
+                        (MathMax(iv.rsi[1], iv.rsi[2]) > 100.0 - InpPullbackRSI);
 
-    // 5. Higher-timeframe trend alignment — fastEMA vs slowEMA on Trend TF,
-    //    combined with Trend-TF MACD alignment:
-    bool htfBull      = (iv.fastEMA_TF[0] > iv.slowEMA_TF[0]) &&
-                        (iv.fastEMA_TF[0] > iv.trendEMA_TF[0]) &&
-                        (iv.macdMain_TF[0] >= iv.macdSignal_TF[0]);
-    bool htfBear      = (iv.fastEMA_TF[0] < iv.slowEMA_TF[0]) &&
-                        (iv.fastEMA_TF[0] < iv.trendEMA_TF[0]) &&
-                        (iv.macdMain_TF[0] <= iv.macdSignal_TF[0]);
+    // 5. Resume trigger — last closed bar closes back through the fast EMA
+    //    in the trend direction with RSI turning, and not yet exhausted
+    bool resumeBuy  = (iv.barClose[0] > iv.fastEMA[0]) &&
+                      (iv.barClose[0] > iv.barOpen[0]) &&
+                      (iv.rsi[0] > iv.rsi[1]) &&
+                      (iv.rsi[0] < InpRSIOverbought);
+    bool resumeSell = (iv.barClose[0] < iv.fastEMA[0]) &&
+                      (iv.barClose[0] < iv.barOpen[0]) &&
+                      (iv.rsi[0] < iv.rsi[1]) &&
+                      (iv.rsi[0] > InpRSIOversold);
 
-    //--- Score 4-of-5 confluence (each condition = 1 point)
-    int buyScore  = (emaCrossUp  ? 1 : 0) + (aboveTrend ? 1 : 0) +
-                    (macdBull    ? 1 : 0) + (rsiOK_buy  ? 1 : 0) +
-                    (htfBull     ? 1 : 0);
+    //--- Score 5-condition confluence (each condition = 1 point)
+    int buyScore  = (htfBull ? 1 : 0) + (trendBuy  ? 1 : 0) + (adxOK ? 1 : 0) +
+                    (pullbackBuy  ? 1 : 0) + (resumeBuy  ? 1 : 0);
 
-    int sellScore = (emaCrossDown ? 1 : 0) + (belowTrend ? 1 : 0) +
-                    (macdBear     ? 1 : 0) + (rsiOK_sell ? 1 : 0) +
-                    (htfBear      ? 1 : 0);
+    int sellScore = (htfBear ? 1 : 0) + (trendSell ? 1 : 0) + (adxOK ? 1 : 0) +
+                    (pullbackSell ? 1 : 0) + (resumeSell ? 1 : 0);
 
-    if(buyScore  >= InpMinSignals) return SIGNAL_BUY;
-    if(sellScore >= InpMinSignals) return SIGNAL_SELL;
+    //--- Resume trigger is mandatory: without it the pullback may still be
+    //    in progress and entering early means catching a falling knife.
+    if(buyScore  >= InpMinSignals && resumeBuy)  return SIGNAL_BUY;
+    if(sellScore >= InpMinSignals && resumeSell) return SIGNAL_SELL;
 
     return SIGNAL_NONE;
 }
@@ -1344,6 +1408,10 @@ int OnInit()
     if(h_atr == INVALID_HANDLE)
     { Print("OnInit: iATR handle invalid"); return INIT_FAILED; }
 
+    h_adx = iADX(_Symbol, InpMainTF, InpADXPeriod);
+    if(h_adx == INVALID_HANDLE)
+    { Print("OnInit: iADX handle invalid"); return INIT_FAILED; }
+
     h_macd = iMACD(_Symbol, InpMainTF,
                    InpMACDFast, InpMACDSlow, InpMACDSignal, PRICE_CLOSE);
     if(h_macd == INVALID_HANDLE)
@@ -1399,6 +1467,7 @@ void OnDeinit(const int reason)
     if(h_trendEMA   != INVALID_HANDLE) IndicatorRelease(h_trendEMA);
     if(h_rsi        != INVALID_HANDLE) IndicatorRelease(h_rsi);
     if(h_atr        != INVALID_HANDLE) IndicatorRelease(h_atr);
+    if(h_adx        != INVALID_HANDLE) IndicatorRelease(h_adx);
     if(h_macd       != INVALID_HANDLE) IndicatorRelease(h_macd);
     if(h_fastEMA_TF != INVALID_HANDLE) IndicatorRelease(h_fastEMA_TF);
     if(h_slowEMA_TF != INVALID_HANDLE) IndicatorRelease(h_slowEMA_TF);
