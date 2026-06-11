@@ -1259,7 +1259,10 @@ int OnInit()
     //--- Trade object setup
     trade.SetExpertMagicNumber((ulong)InpMagicNumber);
     trade.SetDeviationInPoints(10);
-    trade.SetTypeFilling(ORDER_FILLING_FOK);
+    { long f = SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
+      if     ((f & SYMBOL_FILLING_FOK) != 0) trade.SetTypeFilling(ORDER_FILLING_FOK);
+      else if((f & SYMBOL_FILLING_IOC) != 0) trade.SetTypeFilling(ORDER_FILLING_IOC);
+      else                                   trade.SetTypeFilling(ORDER_FILLING_RETURN); }
     trade.LogLevel(LOG_LEVEL_ERRORS);
 
     //--- Cache symbol constants (never change at runtime)
