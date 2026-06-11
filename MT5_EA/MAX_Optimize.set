@@ -48,6 +48,7 @@ InpMACDSignal=9||9||1||9||N
 InpATRPeriod=14||14||1||14||N
 InpATRSLMulti=1.5||1.0||0.25||2.5||Y
 InpATRTPMulti=2.5||1.5||0.25||4.0||Y
+InpMinSignals=4||3||1||5||Y
 
 ; ---- TRADE MANAGEMENT — more concurrent trades allowed ----
 InpMaxTrades=5||1||1||8||Y

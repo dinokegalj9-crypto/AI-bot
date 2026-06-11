@@ -345,6 +345,11 @@ bool ValidateInputs()
         Print("ValidateInputs: InpMaxSpreadPoints must be > 0 (got ", InpMaxSpreadPoints, ")");
         ok = false;
     }
+    if(InpMinSignals < 1 || InpMinSignals > 5)
+    {
+        Print("ValidateInputs: InpMinSignals must be 1-5 (got ", InpMinSignals, ")");
+        ok = false;
+    }
 
     //--- PID bounds
     if(InpPIDEnabled)
@@ -598,7 +603,7 @@ bool LoadIndicators(IndicatorValues &iv)
 
 //+------------------------------------------------------------------+
 //===================================================================
-// SECTION 5 — SIGNAL GENERATION (4 / 5 confluence)
+// SECTION 5 — SIGNAL GENERATION (InpMinSignals-of-5 confluence)
 //===================================================================
 //+------------------------------------------------------------------+
 
@@ -648,8 +653,8 @@ ENUM_SIGNAL GetSignal(const IndicatorValues &iv)
                     (macdBear     ? 1 : 0) + (rsiOK_sell ? 1 : 0) +
                     (htfBear      ? 1 : 0);
 
-    if(buyScore  >= 4) return SIGNAL_BUY;
-    if(sellScore >= 4) return SIGNAL_SELL;
+    if(buyScore  >= InpMinSignals) return SIGNAL_BUY;
+    if(sellScore >= InpMinSignals) return SIGNAL_SELL;
 
     return SIGNAL_NONE;
 }

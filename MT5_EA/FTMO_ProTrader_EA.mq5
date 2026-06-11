@@ -48,6 +48,7 @@ input int    InpMACDSignal         = 9;       // MACD signal period
 input int    InpATRPeriod          = 14;      // ATR period
 input double InpATRSLMulti         = 1.5;     // ATR stop loss multiplier
 input double InpATRTPMulti         = 2.5;     // ATR take profit multiplier
+input int    InpMinSignals         = 4;       // Min confluence signals to trade (3-5)
 
 //+------------------------------------------------------------------+
 //| ════════ TRADE MANAGEMENT ════════                               |
