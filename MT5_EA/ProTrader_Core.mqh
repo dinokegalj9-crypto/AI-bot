@@ -375,6 +375,18 @@ bool ValidateInputs()
               DoubleToString(InpPullbackRSI, 2), ")");
         ok = false;
     }
+    if(InpEntryMode < 0 || InpEntryMode > 1)
+    {
+        Print("ValidateInputs: InpEntryMode must be 0 (pullback) or 1 (breakout) (got ",
+              InpEntryMode, ")");
+        ok = false;
+    }
+    if(InpBreakoutLookback < 2)
+    {
+        Print("ValidateInputs: InpBreakoutLookback must be >= 2 (got ",
+              InpBreakoutLookback, ")");
+        ok = false;
+    }
 
     //--- PID bounds
     if(InpPIDEnabled)
@@ -654,19 +666,27 @@ bool LoadIndicators(IndicatorValues &iv)
 
 //+------------------------------------------------------------------+
 //===================================================================
-// SECTION 5 — SIGNAL GENERATION (trend-pullback-resume)
+// SECTION 5 — SIGNAL GENERATION (dispatcher + two strategies)
 //===================================================================
 //+------------------------------------------------------------------+
-// Strategy: trade only WITH a strictly aligned higher-timeframe trend,
-// in a trending regime (ADX), AFTER price has pulled back to the fast
-// EMA and momentum visibly resumes in the trend direction. This enters
-// on dips inside established trends instead of chasing lagging
-// crossovers, which is what made the previous engine unprofitable.
+// Two entry strategies, selected per-symbol via InpEntryMode:
 //
-// Five scored conditions per side (>= InpMinSignals required), with the
-// resume trigger being mandatory regardless of score.
+//   Mode 0 (pullback-resume) — default for ranging/mean-reverting FX
+//   like EURUSD: buy dips to the fast EMA inside an established trend.
+//
+//   Mode 1 (momentum breakout) — suited to instruments that trend in
+//   bursts off session opens (XAUUSD / indices): enter on a confirmed
+//   break of the prior N-bar range, in the higher-timeframe trend
+//   direction, only in a trending (ADX) regime.
+//
+// Both share the same strict HTF-trend and ADX regime gating, so a
+// single risk engine, PID stack, and exit logic serve both.
 
-ENUM_SIGNAL GetSignal(const IndicatorValues &iv)
+//--------------------------------------------------------------------
+// Mode 0 — Pullback-resume. Five scored conditions per side
+// (>= InpMinSignals required); the resume trigger is mandatory.
+//--------------------------------------------------------------------
+ENUM_SIGNAL GetSignalPullback(const IndicatorValues &iv)
 {
     //--- All values are confirmed-bar values: index [0] = last closed bar.
 
@@ -721,6 +741,72 @@ ENUM_SIGNAL GetSignal(const IndicatorValues &iv)
     if(sellScore >= InpMinSignals && resumeSell) return SIGNAL_SELL;
 
     return SIGNAL_NONE;
+}
+
+//--------------------------------------------------------------------
+// Mode 1 — Momentum breakout. Enter when the last closed bar closes
+// beyond the prior InpBreakoutLookback-bar range, in the strictly
+// aligned HTF-trend direction, inside a trending (ADX) regime, with
+// the bar pushing in the breakout direction and RSI confirming.
+//
+// Designed for XAUUSD / indices: gold trends hard off the London/NY
+// opens, and range breakouts capture those bursts far better than
+// pullback entries (which keep buying into momentum that runs away).
+//--------------------------------------------------------------------
+ENUM_SIGNAL GetSignalBreakout(const IndicatorValues &iv)
+{
+    //--- 1. HTF regime — strict EMA stack on the Trend TF
+    bool htfBull = (iv.fastEMA_TF[0] > iv.slowEMA_TF[0]) &&
+                   (iv.slowEMA_TF[0] > iv.trendEMA_TF[0]);
+    bool htfBear = (iv.fastEMA_TF[0] < iv.slowEMA_TF[0]) &&
+                   (iv.slowEMA_TF[0] < iv.trendEMA_TF[0]);
+
+    //--- 2. Trending regime — ADX above threshold (no breakouts in chop)
+    bool adxOK = (iv.adx[0] >= InpADXMin);
+
+    //--- 3. Prior range — highest high / lowest low over the
+    //    InpBreakoutLookback bars BEFORE the breakout bar. The breakout
+    //    bar is chart index 1 (== iv index 0), so the prior range starts
+    //    at chart index 2 to exclude the breakout bar itself.
+    int hiIdx = iHighest(_Symbol, InpMainTF, MODE_HIGH, InpBreakoutLookback, 2);
+    int loIdx = iLowest (_Symbol, InpMainTF, MODE_LOW,  InpBreakoutLookback, 2);
+    if(hiIdx < 0 || loIdx < 0) return SIGNAL_NONE;
+
+    double rangeHigh = iHigh(_Symbol, InpMainTF, hiIdx);
+    double rangeLow  = iLow (_Symbol, InpMainTF, loIdx);
+    if(!MathIsValidNumber(rangeHigh) || !MathIsValidNumber(rangeLow) ||
+       rangeHigh <= 0.0 || rangeLow <= 0.0)
+        return SIGNAL_NONE;
+
+    //--- 4. Breakout — last closed bar closes beyond the prior range and
+    //    is itself a directional (momentum) bar.
+    bool breakUp   = (iv.barClose[0] > rangeHigh) &&
+                     (iv.barClose[0] > iv.barOpen[0]);
+    bool breakDown = (iv.barClose[0] < rangeLow) &&
+                     (iv.barClose[0] < iv.barOpen[0]);
+
+    //--- 5. Momentum confirmation — RSI on the breakout side of 50 and the
+    //    close on the trend side of the main-TF trend EMA. Avoid chasing a
+    //    fully exhausted move (RSI not already past the extreme band).
+    bool momUp   = (iv.rsi[0] > 50.0) && (iv.rsi[0] < InpRSIOverbought) &&
+                   (iv.barClose[0] > iv.trendEMA[0]);
+    bool momDown = (iv.rsi[0] < 50.0) && (iv.rsi[0] > InpRSIOversold) &&
+                   (iv.barClose[0] < iv.trendEMA[0]);
+
+    if(htfBull && adxOK && breakUp   && momUp)   return SIGNAL_BUY;
+    if(htfBear && adxOK && breakDown && momDown) return SIGNAL_SELL;
+
+    return SIGNAL_NONE;
+}
+
+//--------------------------------------------------------------------
+// Dispatcher — routes to the configured entry strategy.
+//--------------------------------------------------------------------
+ENUM_SIGNAL GetSignal(const IndicatorValues &iv)
+{
+    if(InpEntryMode == 1)
+        return GetSignalBreakout(iv);
+    return GetSignalPullback(iv);
 }
 
 //+------------------------------------------------------------------+

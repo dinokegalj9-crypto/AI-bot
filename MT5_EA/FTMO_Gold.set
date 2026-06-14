@@ -1,43 +1,47 @@
-; FTMO ProTrader EA v5.00 — Backtest / Optimization Settings
-; Load this file in MT5 Strategy Tester → Load Settings
+; FTMO ProTrader EA v5.00 — XAUUSD (GOLD) Backtest Settings
+; Momentum-breakout entry mode tuned for gold's session-open bursts.
+; Load in MT5 Strategy Tester → Inputs tab → Load.
+;
+; Attach the EA to an XAUUSD M15 chart. Set Strategy Tester:
+;   Symbol=XAUUSD  Period=M15  Leverage=1:100  Model=Every tick (real ticks)
 
 [Tester]
 Expert=FTMO_ProTrader_EA
-Symbol=EURUSD
-Period=H1
+Symbol=XAUUSD
+Period=M15
 Deposit=100000
 Currency=USD
 Leverage=1:100
 Model=1                  ; Every tick based on real ticks
 FromDate=2023.01.01
 ToDate=2024.12.31
-Optimization=0           ; 0=disabled, 1=slow complete, 2=fast genetic
+Optimization=0
 
 [EA]
 InpFTMOMode=1
 InpEnforceDailyLimit=1
 InpEnforceTotalLimit=1
 InpEnforceProfitStop=1
-InpRiskPerTrade=1.0
+InpRiskPerTrade=0.5
 InpMaxDailyLoss=4.5
 InpMaxTotalLoss=9.0
 InpProfitTarget=10.0
 InpMinTradingDays=4
-InpMainTF=16385          ; PERIOD_H1
-InpTrendTF=16388         ; PERIOD_H4
+InpMainTF=15             ; PERIOD_M15
+InpTrendTF=16385         ; PERIOD_H1
 InpFastEMA=20
 InpSlowEMA=50
 InpTrendEMA=200
 InpRSIPeriod=14
-InpRSIOverbought=65.0
-InpRSIOversold=35.0
+InpRSIOverbought=70.0
+InpRSIOversold=30.0
 InpMACDFast=12
 InpMACDSlow=26
 InpMACDSignal=9
 InpATRPeriod=14
-InpATRSLMulti=1.5
-InpATRTPMulti=2.5
-InpEntryMode=0
+InpATRSLMulti=2.0
+InpATRTPMulti=3.0
+InpEntryMode=1           ; 1 = momentum breakout (gold)
 InpMinSignals=4
 InpBreakoutLookback=20
 InpADXPeriod=14
@@ -47,8 +51,8 @@ InpMaxTrades=1
 InpUseBreakeven=1
 InpBEAtRR=1.0
 InpUseTrailing=1
-InpTrailATRMulti=1.0
-InpMaxSpreadPoints=30
+InpTrailATRMulti=1.5
+InpMaxSpreadPoints=50    ; gold spread runs wider than FX
 InpMagicNumber=202401
 InpUseLondon=1
 InpUseNewYork=1
@@ -60,7 +64,7 @@ InpFilterHighImpact=1
 InpFilterMedImpact=0
 InpPIDEnabled=1
 InpPIDMinRisk=0.10
-InpPIDMaxRisk=2.00
+InpPIDMaxRisk=1.50
 InpPIDDeadband=0.05
 InpPIDDerivFilter=0.50
 InpPIDMaxStep=0.25

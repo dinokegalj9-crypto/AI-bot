@@ -1,0 +1,120 @@
+; FTMO ProTrader EA v5.00 — XAUUSD (GOLD) DISCIPLINED OPTIMIZATION
+; =================================================================
+; This preset is built to AVOID the over-fitting that produced the
+; fantasy "13-trade, PF 5.81" results. Three rules enforce that:
+;
+;   1. Only 4 parameters are free (Y). Everything else — and ALL 5 PID
+;      gain stacks — is LOCKED (N). Fewer knobs = far less curve-fitting.
+;   2. The search space is tiny (~180 combinations), so use COMPLETE
+;      optimisation (Optimization=1), not genetic. It finishes in minutes
+;      and explores every combination once — no endless genetic expansion.
+;   3. MANDATORY out-of-sample check via MT5's built-in Forward test:
+;        Strategy Tester → Settings tab → Forward = "1/2"
+;      MT5 then optimises on the first half and AUTO-VALIDATES on the
+;      unseen second half. In the results, sort by the FORWARD column,
+;      not the back column. A row that is strong in BOTH halves is real;
+;      a row strong only in the back half is over-fit — discard it.
+;
+; Reject any result with fewer than ~30 trades: too few trades cannot be
+; trusted no matter how good the profit factor looks.
+;
+; Attach to an XAUUSD M15 chart before loading.
+
+[Tester]
+Expert=FTMO_ProTrader_EA
+Symbol=XAUUSD
+Period=M15
+Deposit=100000
+Currency=USD
+Leverage=1:100
+Model=1
+FromDate=2023.01.01
+ToDate=2024.12.31
+Optimization=1           ; 1 = COMPLETE (slow) — space is small, use it
+OptimizationCriterion=6  ; custom max — or use Balance+max recovery
+ForwardMode=2            ; 2 = 1/2 split (set this in the GUI Forward dropdown too)
+
+[Inputs]
+; ---- MODE & FTMO SAFETY — all LOCKED ----
+InpFTMOMode=true||false||0||true||N
+InpEnforceDailyLimit=true||false||0||true||N
+InpEnforceTotalLimit=true||false||0||true||N
+InpEnforceProfitStop=true||false||0||true||N
+InpRiskPerTrade=0.5||0.5||0.25||0.5||N
+InpMaxDailyLoss=4.5||4.5||0.5||4.5||N
+InpMaxTotalLoss=9.0||9.0||0.5||9.0||N
+InpProfitTarget=10.0||10.0||1.0||10.0||N
+InpMinTradingDays=4||4||1||4||N
+
+; ---- TIMEFRAMES & INDICATOR PERIODS — LOCKED ----
+InpMainTF=15||0||0||0||N
+InpTrendTF=16385||0||0||0||N
+InpFastEMA=20||20||5||20||N
+InpSlowEMA=50||50||10||50||N
+InpTrendEMA=200||200||25||200||N
+InpRSIPeriod=14||14||2||14||N
+InpRSIOverbought=70.0||70.0||5.0||70.0||N
+InpRSIOversold=30.0||30.0||5.0||30.0||N
+InpMACDFast=12||12||1||12||N
+InpMACDSlow=26||26||1||26||N
+InpMACDSignal=9||9||1||9||N
+InpATRPeriod=14||14||1||14||N
+
+; ---- THE ONLY FREE PARAMETERS (4) — strategy geometry ----
+InpATRSLMulti=2.0||1.5||0.5||2.5||Y
+InpATRTPMulti=3.0||2.5||0.5||4.0||Y
+InpEntryMode=1||1||1||1||N
+InpMinSignals=4||4||1||4||N
+InpBreakoutLookback=20||10||5||30||Y
+InpADXPeriod=14||14||2||14||N
+InpADXMin=20.0||15.0||5.0||25.0||Y
+InpPullbackRSI=50.0||50.0||5.0||50.0||N
+
+; ---- TRADE MANAGEMENT — LOCKED ----
+InpMaxTrades=1||1||1||1||N
+InpUseBreakeven=true||false||0||true||N
+InpBEAtRR=1.0||1.0||0.5||1.0||N
+InpUseTrailing=true||false||0||true||N
+InpTrailATRMulti=1.5||1.5||0.5||1.5||N
+InpMaxSpreadPoints=50||50||5||50||N
+InpMagicNumber=202401||202401||1||202401||N
+
+; ---- SESSION & NEWS — LOCKED ----
+InpUseLondon=true||false||0||true||N
+InpUseNewYork=true||false||0||true||N
+InpGMTOffset=0||0||1||0||N
+InpUseNewsFilter=true||false||0||true||N
+InpNewsMinBefore=30||30||5||30||N
+InpNewsMinAfter=30||30||5||30||N
+InpFilterHighImpact=true||false||0||true||N
+InpFilterMedImpact=false||false||0||true||N
+
+; ---- PID STACK — ALL GAINS LOCKED (this was the main over-fit surface) ----
+InpPIDEnabled=true||false||0||true||N
+InpPIDMinRisk=0.10||0.10||0.05||0.10||N
+InpPIDMaxRisk=1.50||1.50||0.25||1.50||N
+InpPIDDeadband=0.05||0.05||0.01||0.05||N
+InpPIDDerivFilter=0.50||0.50||0.10||0.50||N
+InpPIDMaxStep=0.25||0.25||0.05||0.25||N
+InpEPIDKp=2.0||2.0||0.5||2.0||N
+InpEPIDKi=0.1||0.1||0.05||0.1||N
+InpEPIDKd=0.5||0.5||0.25||0.5||N
+InpEPIDTarget=0.50||0.50||0.10||0.50||N
+InpVPIDEnabled=true||false||0||true||N
+InpVPIDKp=1.5||1.5||0.5||1.5||N
+InpVPIDKi=0.05||0.05||0.05||0.05||N
+InpVPIDATRMA=20||20||5||20||N
+InpWRPIDEnabled=true||false||0||true||N
+InpWRPIDKp=1.0||1.0||0.5||1.0||N
+InpWRPIDKi=0.2||0.2||0.1||0.2||N
+InpWRPIDWindow=20||20||5||20||N
+InpWRPIDTarget=0.50||0.50||0.05||0.50||N
+InpDVPIDEnabled=true||false||0||true||N
+InpDVPIDKp=3.0||3.0||0.5||3.0||N
+InpDVPIDKd=1.0||1.0||0.5||1.0||N
+InpDVPIDWindow=5||5||1||5||N
+InpSPIDEnabled=true||false||0||true||N
+InpSPIDKp=2.0||2.0||0.5||2.0||N
+InpSPIDWindow=50||50||10||50||N
+InpShowDashboard=false||false||0||true||N
+InpDashIntervalMs=250||250||50||250||N
