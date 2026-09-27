@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="hr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>KAGE Put Sjene</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DotGothic16&family=Shippori+Mincho+B1:wght@500;700;800&family=Yuji+Syuku&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap">
+<style>
+  :root {
+    --ink: #0b0e19;        /* night sumi */
+    --ink-2: #151a2c;
+    --paper: #ece3cf;      /* washi */
+    --paper-2: #d8ccb0;
+    --sumi: #1c1a1f;       /* brush ink on paper */
+    --shu: #c23b26;        /* vermilion seal */
+    --kin: #d6a64e;        /* lantern gold */
+    --mist: #97a1c0;
+    --f-display: "Shippori Mincho B1", "Hiragino Mincho ProN", "Yu Mincho", Georgia, serif;
+    --f-brush: "Yuji Syuku", "Shippori Mincho B1", serif;
+    --f-body: "Zen Kaku Gothic New", "Segoe UI", system-ui, sans-serif;
+    --f-pixel: "DotGothic16", ui-monospace, monospace;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; overflow: hidden; background: var(--ink); color: var(--paper); font-family: var(--f-body); }
+  body { -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+  canvas#game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; background: var(--ink); touch-action: none; }
+
+  .screen { position: fixed; inset: 0; display: flex; z-index: 10; padding-inline: max(16px, env(safe-area-inset-left)); }
+  .screen[hidden] { display: none !important; }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--kin); outline-offset: 4px; }
+
+  /* ---------- title ---------- */
+  #title { align-items: stretch; background: linear-gradient(90deg, rgba(8,10,20,0.94) 0%, rgba(8,10,20,0.78) 38%, rgba(8,10,20,0.05) 72%); }
+  .title-col { display: flex; flex-direction: column; justify-content: center; gap: clamp(14px, 2.4vh, 26px); padding-block: 5vh; padding-left: clamp(0px, 5vw, 80px); max-width: 560px; }
+  .eyebrow { font-family: var(--f-body); font-size: 12px; letter-spacing: 0.34em; text-transform: uppercase; color: var(--mist); }
+  .mark { display: flex; align-items: flex-end; gap: 18px; }
+  .kanji { font-family: var(--f-brush); font-size: clamp(110px, 24vmin, 230px); line-height: 0.85; color: var(--paper); text-shadow: 0 0 40px rgba(236,227,207,0.12); }
+  .wordmark h1 { margin: 0; font-family: var(--f-display); font-weight: 800; font-size: clamp(34px, 6vmin, 58px); letter-spacing: 0.42em; line-height: 1; }
+  .wordmark p { margin: 10px 0 0; font-family: var(--f-display); font-weight: 500; font-size: clamp(16px, 2.4vmin, 21px); letter-spacing: 0.08em; color: var(--paper-2); }
+  .menu { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin-top: 6px; }
+  .menu button { position: relative; padding: 7px 0 7px 34px; font-family: var(--f-display); font-weight: 700; font-size: clamp(19px, 2.6vmin, 24px); letter-spacing: 0.04em; color: var(--paper-2); transition: color .15s, transform .15s; text-align: left; }
+  .menu button::before { content: ""; position: absolute; left: 0; top: 50%; width: 22px; height: 2px; background: var(--paper-2); opacity: .35; transition: width .2s, opacity .2s, background .2s; }
+  .menu button:hover, .menu button:focus-visible { color: var(--paper); transform: translateX(4px); outline: none; }
+  .menu button:hover::before, .menu button:focus-visible::before { width: 26px; opacity: 1; background: var(--shu); height: 4px; margin-top: -1px; }
+  .menu small { display: block; font-family: var(--f-body); font-weight: 400; font-size: 12px; color: var(--mist); letter-spacing: 0.02em; margin-top: 2px; }
+  .title-foot { font-size: 12px; color: var(--mist); line-height: 1.6; max-width: 44ch; }
+  .seal { position: fixed; right: max(20px, 4vw); bottom: max(20px, 5vh); width: 74px; height: 74px; background: var(--shu); color: var(--paper); display: grid; place-items: center; font-family: var(--f-brush); font-size: 40px; border-radius: 6px; transform: rotate(-4deg); box-shadow: inset 0 0 0 3px rgba(236,227,207,.18), 0 6px 30px rgba(194,59,38,.25); opacity: .9; }
+
+  /* ---------- washi panels ---------- */
+  .veil { align-items: center; justify-content: center; background: rgba(6,8,16,0.72); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px); }
+  .washi {
+    position: relative; width: min(620px, 100%); max-height: calc(100% - 32px); overflow: auto;
+    background:
+      radial-gradient(120% 80% at 10% 0%, rgba(255,255,255,.35), transparent 60%),
+      repeating-linear-gradient(97deg, rgba(120,100,70,.05) 0 2px, transparent 2px 7px),
+      repeating-linear-gradient(8deg, rgba(120,100,70,.04) 0 1px, transparent 1px 11px),
+      var(--paper);
+    color: var(--sumi); border-radius: 3px; padding: clamp(22px, 4vw, 40px);
+    box-shadow: 0 30px 80px rgba(0,0,0,.55);
+  }
+  .washi::after { content: attr(data-seal); position: absolute; top: 18px; right: 18px; width: 44px; height: 44px; background: var(--shu); color: var(--paper); border-radius: 4px; display: grid; place-items: center; font-family: var(--f-brush); font-size: 24px; transform: rotate(3deg); }
+  .washi h2 { margin: 0 0 4px; font-family: var(--f-display); font-weight: 800; font-size: 28px; letter-spacing: .06em; text-wrap: balance; padding-right: 56px; }
+  .washi .lead { margin: 0 0 20px; color: #5a5248; font-size: 14px; }
+  .washi p { line-height: 1.7; max-width: 62ch; }
+  .washi .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+  .btn { padding: 10px 18px; border: 1.5px solid var(--sumi); border-radius: 2px; font-family: var(--f-display); font-weight: 700; font-size: 16px; letter-spacing: .04em; color: var(--sumi); transition: background .15s, color .15s; }
+  .btn:hover, .btn:focus-visible { background: var(--sumi); color: var(--paper); outline: none; }
+  .btn.primary { background: var(--sumi); color: var(--paper); }
+  .btn.primary:hover, .btn.primary:focus-visible { background: var(--shu); border-color: var(--shu); }
+
+  .keys { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 26px; font-size: 14px; }
+  .keys div { display: flex; justify-content: space-between; gap: 12px; padding-block: 5px; border-bottom: 1px solid rgba(28,26,31,.12); }
+  .keys b { font-weight: 500; }
+  kbd { font-family: var(--f-pixel); font-size: 13px; background: rgba(28,26,31,.08); border-radius: 3px; padding: 1px 6px; white-space: nowrap; }
+  .keys-note { font-size: 13px; color: #5a5248; margin-top: 14px; }
+  @media (max-width: 560px) { .keys { grid-template-columns: 1fr; } }
+
+  .setting { display: grid; grid-template-columns: 150px 1fr; align-items: center; gap: 12px; padding-block: 10px; border-bottom: 1px solid rgba(28,26,31,.12); }
+  .setting label, .setting .lbl { font-weight: 500; font-size: 15px; }
+  .setting input[type=range] { width: 100%; accent-color: var(--shu); }
+  .seg { display: flex; flex-wrap: wrap; gap: 6px; }
+  .seg button { padding: 6px 12px; border: 1.5px solid rgba(28,26,31,.35); border-radius: 2px; font-size: 14px; color: var(--sumi); }
+  .seg button[aria-pressed="true"] { background: var(--sumi); color: var(--paper); border-color: var(--sumi); }
+  @media (max-width: 480px) { .setting { grid-template-columns: 1fr; } }
+
+  /* intro: vertical scroll text */
+  #intro .washi p { font-family: var(--f-display); font-size: 17px; }
+  .hint { font-family: var(--f-body); font-size: 13px; color: #6a6258; }
+
+  /* level card */
+  #card { align-items: center; justify-content: center; pointer-events: none; background: radial-gradient(60% 50% at 50% 50%, rgba(5,6,12,.55), rgba(5,6,12,0)); }
+  .card-inner { text-align: center; }
+  .card-kanji { font-family: var(--f-brush); font-size: clamp(90px, 22vmin, 200px); line-height: 1; color: var(--paper); opacity: 0; transform: scale(1.08); animation: brush 2.9s ease forwards; }
+  .card-name { font-family: var(--f-display); font-weight: 800; font-size: clamp(22px, 4vmin, 34px); letter-spacing: .18em; margin-top: 10px; opacity: 0; animation: rise 2.9s .25s ease forwards; }
+  .card-sub { font-family: var(--f-body); font-size: 14px; letter-spacing: .2em; text-transform: uppercase; color: var(--mist); margin-top: 8px; opacity: 0; animation: rise 2.9s .45s ease forwards; }
+  .card-num { font-family: var(--f-pixel); font-size: 13px; color: var(--kin); letter-spacing: .3em; margin-bottom: 10px; opacity: 0; animation: rise 2.9s ease forwards; }
+  @keyframes brush { 0% { opacity: 0; transform: scale(1.1); filter: blur(6px); } 18% { opacity: 1; transform: scale(1); filter: blur(0); } 78% { opacity: 1; } 100% { opacity: 0; } }
+  @keyframes rise { 0% { opacity: 0; transform: translateY(8px); } 20% { opacity: 1; transform: none; } 78% { opacity: 1; } 100% { opacity: 0; } }
+
+  /* toasts + scroll messages */
+  #toast { position: fixed; left: 50%; top: max(78px, 11vh); transform: translate(-50%, -6px); z-index: 20; padding: 8px 16px; background: rgba(10,12,22,.78); border-top: 1px solid rgba(214,166,78,.55); color: var(--paper); font-family: var(--f-display); font-weight: 700; font-size: 16px; letter-spacing: .03em; opacity: 0; transition: opacity .25s, transform .25s; pointer-events: none; max-width: calc(100% - 32px); text-align: center; }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
+  #scrollMsg { position: fixed; left: 50%; bottom: max(26px, 6vh); transform: translateX(-50%); z-index: 20; width: min(560px, calc(100% - 32px)); padding: 16px 20px 16px 58px; color: var(--sumi); font-family: var(--f-display); font-size: 16px; line-height: 1.6; background: var(--paper); border-radius: 2px; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+  #scrollMsg::before { content: "巻"; position: absolute; left: 14px; top: 16px; width: 30px; height: 30px; background: var(--shu); color: var(--paper); font-family: var(--f-brush); display: grid; place-items: center; border-radius: 3px; font-size: 18px; }
+  #scrollMsg small { display: block; font-family: var(--f-body); font-size: 12px; color: #6a6258; margin-top: 6px; }
+  #bossName { position: fixed; left: 50%; bottom: max(76px, 11vh); transform: translateX(-50%); z-index: 15; text-align: center; pointer-events: none; opacity: 0; transition: opacity .6s; }
+  #bossName.show { opacity: 1; }
+  #bossName .bk { font-family: var(--f-brush); font-size: clamp(34px, 7vmin, 60px); color: var(--paper); line-height: 1; }
+  #bossName .bn { font-family: var(--f-display); font-weight: 700; letter-spacing: .2em; font-size: 14px; color: var(--kin); margin-top: 4px; }
+  #fade { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; z-index: 30; transition: opacity .8s ease; }
+  #fade.on { opacity: 1; }
+
+  /* ending stats */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 10px; margin: 18px 0 6px; }
+  .stats div { border-top: 2px solid var(--sumi); padding-top: 6px; }
+  .stats b { display: block; font-family: var(--f-pixel); font-size: 24px; font-variant-numeric: tabular-nums; }
+  .stats span { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: #5a5248; }
+  .rank { font-family: var(--f-brush); font-size: 64px; color: var(--shu); line-height: 1; }
+
+  /* touch controls */
+  #touch { position: fixed; inset: 0; z-index: 12; pointer-events: none; }
+  #touch[hidden] { display: none; }
+  #stickZone { position: absolute; left: 0; bottom: 0; width: 50%; height: 60%; pointer-events: auto; touch-action: none; }
+  #stick { position: absolute; left: max(28px, env(safe-area-inset-left)); bottom: max(28px, env(safe-area-inset-bottom)); width: 124px; height: 124px; border-radius: 50%; border: 2px solid rgba(236,227,207,.25); background: rgba(10,12,22,.25); }
+  #knob { position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; margin: -26px 0 0 -26px; border-radius: 50%; background: rgba(236,227,207,.35); }
+  .tbtns { position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: max(18px, env(safe-area-inset-bottom)); display: grid; grid-template-columns: repeat(3, 62px); gap: 10px; pointer-events: auto; }
+  .tbtns button { width: 62px; height: 62px; border-radius: 50%; background: rgba(10,12,22,.45); border: 2px solid rgba(236,227,207,.3); color: var(--paper); font-family: var(--f-body); font-size: 11px; line-height: 1.1; display: grid; place-items: center; touch-action: none; }
+  .tbtns button b { display: block; font-family: var(--f-brush); font-size: 20px; font-weight: 400; }
+  .tbtns button.big { border-color: rgba(194,59,38,.8); background: rgba(194,59,38,.35); }
+  #tPause { position: absolute; top: calc(max(14px, env(safe-area-inset-top)) + 110px); left: max(20px, env(safe-area-inset-left)); pointer-events: auto; width: 44px; height: 36px; border-radius: 4px; background: rgba(10,12,22,.5); color: var(--paper); font-family: var(--f-pixel); }
+  @media (prefers-reduced-motion: reduce) { .card-kanji, .card-name, .card-sub, .card-num { animation-duration: 2.9s; transform: none; filter: none; } .menu button { transition: none; } }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="Igra KAGE"></canvas>
+
+<section id="title" class="screen" aria-label="Glavni izbornik">
+  <div class="title-col">
+    <div class="eyebrow">影の道 · Put sjene</div>
+    <div class="mark">
+      <div class="kanji" aria-hidden="true">影</div>
+      <div class="wordmark"><h1>KAGE</h1><p>Posljednji iz klana sjene</p></div>
+    </div>
+    <nav class="menu" id="mainMenu">
+      <button id="btnContinue" data-act="continue">Nastavi<small id="continueInfo">—</small></button>
+      <button data-act="new">Nova igra</button>
+      <button data-act="controls">Kontrole</button>
+      <button data-act="settings">Postavke</button>
+    </nav>
+    <p class="title-foot">Četiri razine, katana, nunčake, bo štap i šogun koji ne oprašta. Tipkovnica, miš, gamepad ili dodir.</p>
+  </div>
+  <div class="seal" aria-hidden="true">忍</div>
+</section>
+
+<section id="intro" class="screen veil" hidden>
+  <div class="washi" data-seal="序">
+    <h2>Noć kad je selo gorjelo</h2>
+    <p class="lead">Provincija Shinano, jesen.</p>
+    <p>Šogun Kuroda Masanobu u jednoj je noći spalio selo klana Kage i odnio Mjesečevo zrcalo, relikviju koju su tvoji preci čuvali stotinama godina.</p>
+    <p>Preživio si samo ti. Put do njegove utvrde vodi kroz bambusovu šumu, vrtove palače i tamnicu pod zidinama.</p>
+    <p class="hint">Pritisni bilo koju tipku ili dodirni za početak.</p>
+    <div class="actions"><button class="btn primary" data-act="begin">Kreni</button></div>
+  </div>
+</section>
+
+<section id="controls" class="screen veil" hidden>
+  <div class="washi" data-seal="技">
+    <h2>Kontrole</h2>
+    <p class="lead">Smjer je vezan uz ekran: gore znači gore na ekranu.</p>
+    <div class="keys">
+      <div><b>Kretanje</b><span><kbd>WASD</kbd> <kbd>↑↓←→</kbd></span></div>
+      <div><b>Udarac (kombo ×3)</b><span><kbd>J</kbd> <kbd>Lijevi klik</kbd></span></div>
+      <div><b>Jaki udarac (kružni)</b><span><kbd>K</kbd> <kbd>Desni klik</kbd></span></div>
+      <div><b>Blok · šuljanje</b><span><kbd>L</kbd> <kbd>Shift</kbd></span></div>
+      <div><b>Skok</b><span><kbd>Razmak</kbd></span></div>
+      <div><b>Kolut (neranjiv)</b><span><kbd>C</kbd> <kbd>Ctrl</kbd></span></div>
+      <div><b>Shuriken</b><span><kbd>Q</kbd></span></div>
+      <div><b>Bomba dima</b><span><kbd>F</kbd></span></div>
+      <div><b>Promjena oružja</b><span><kbd>Tab</kbd> <kbd>1–4</kbd></span></div>
+      <div><b>Karta</b><span><kbd>M</kbd></span></div>
+      <div><b>Pauza</b><span><kbd>Esc</kbd> <kbd>P</kbd></span></div>
+      <div><b>Gamepad</b><span><kbd>X</kbd> udarac <kbd>Y</kbd> jaki <kbd>A</kbd> skok <kbd>B</kbd> kolut <kbd>RB</kbd> blok</span></div>
+    </div>
+    <p class="keys-note">Blok pritisnut tik prije udarca je savršeno pariranje: protivnik posrne, a strijela se vrati strijelcu. Napad s leđa na neopreznog stražara ubija ga odmah.</p>
+    <div class="actions"><button class="btn primary" data-act="back">Natrag</button></div>
+  </div>
+</section>
+
+<section id="settings" class="screen veil" hidden>
+  <div class="washi" data-seal="設">
+    <h2>Postavke</h2>
+    <p class="lead">Spremaju se u ovom pregledniku.</p>
+    <div class="setting"><label for="volMusic">Glazba</label><input id="volMusic" type="range" min="0" max="1" step="0.05"></div>
+    <div class="setting"><label for="volSfx">Zvučni efekti</label><input id="volSfx" type="range" min="0" max="1" step="0.05"></div>
+    <div class="setting"><span class="lbl">Težina</span><div class="seg" id="diffSeg"><button data-diff="0">Lako</button><button data-diff="1">Normalno</button><button data-diff="2">Teško</button></div></div>
+    <div class="setting"><span class="lbl">CRT filtar</span><div class="seg"><button id="optCrt">Uključen</button></div></div>
+    <div class="setting"><span class="lbl">Trešnja kamere</span><div class="seg"><button id="optShake">Uključena</button></div></div>
+    <div class="actions"><button class="btn primary" data-act="back">Natrag</button></div>
+  </div>
+</section>
+
+<section id="pause" class="screen veil" hidden>
+  <div class="washi" data-seal="休">
+    <h2>Pauza</h2>
+    <p class="lead" id="pauseInfo">—</p>
+    <div class="actions">
+      <button class="btn primary" data-act="resume">Nastavi</button>
+      <button class="btn" data-act="respawn">Kontrolna točka</button>
+      <button class="btn" data-act="controls">Kontrole</button>
+      <button class="btn" data-act="settings">Postavke</button>
+      <button class="btn" data-act="quit">Izbornik</button>
+    </div>
+  </div>
+</section>
+
+<section id="dead" class="screen veil" hidden>
+  <div class="washi" data-seal="死">
+    <h2>Sjena je pala</h2>
+    <p class="lead" id="deadInfo">Kuroda se smije u svojoj utvrdi.</p>
+    <p>Vraćaš se na posljednju kontrolnu točku. Ključevi i otvorena vrata ostaju tvoji, a poraženi stražari ostaju poraženi.</p>
+    <div class="actions">
+      <button class="btn primary" data-act="respawn">Ustani ponovno</button>
+      <button class="btn" data-act="quit">Izbornik</button>
+    </div>
+  </div>
+</section>
+
+<section id="ending" class="screen veil" hidden>
+  <div class="washi" data-seal="終">
+    <h2>Mjesečevo zrcalo</h2>
+    <p class="lead">Kuroda je pao. Zrcalo se vraća klanu.</p>
+    <p>U njemu, prvi put nakon te noći, ne vidiš plamen nego mjesec. Klan Kage živi dok živi njegova sjena.</p>
+    <div class="stats" id="endStats"></div>
+    <div class="rank" id="endRank">—</div>
+    <div class="actions"><button class="btn primary" data-act="quit">Izbornik</button></div>
+  </div>
+</section>
+
+<section id="card" class="screen" hidden>
+  <div class="card-inner">
+    <div class="card-num" id="cardNum">RAZINA 1 / 4</div>
+    <div class="card-kanji" id="cardKanji">竹林</div>
+    <div class="card-name" id="cardName">Bambusova šuma</div>
+    <div class="card-sub" id="cardSub">Sumrak</div>
+  </div>
+</section>
+
+<div id="toast" role="status" aria-live="polite"></div>
+<div id="scrollMsg" hidden></div>
+<div id="bossName"><div class="bk">黒田</div><div class="bn">ŠOGUN KURODA MASANOBU</div></div>
+<div id="fade"></div>
+
+<div id="touch" hidden>
+  <div id="stickZone"><div id="stick"><div id="knob"></div></div></div>
+  <div class="tbtns">
+    <button data-t="throw"><span><b>星</b>Shuriken</span></button>
+    <button data-t="smoke"><span><b>煙</b>Dim</span></button>
+    <button data-t="heavy"><span><b>重</b>Jaki</span></button>
+    <button data-t="block"><span><b>守</b>Blok</span></button>
+    <button data-t="roll"><span><b>転</b>Kolut</span></button>
+    <button data-t="attack" class="big"><span><b>斬</b>Udarac</span></button>
+    <button data-t="weapon"><span><b>替</b>Oružje</span></button>
+    <button data-t="map"><span><b>図</b>Karta</span></button>
+    <button data-t="jump"><span><b>跳</b>Skok</span></button>
+  </div>
+  <button id="tPause" aria-label="Pauza">II</button>
+</div>
+
+<script src="js/util.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/levels.js"></script>
+<script src="js/render.js"></script>
+<script src="js/actors.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>
